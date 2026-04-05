@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Illumina HiSeq\",\"description\":\"Illumina HiSeq 2500/4000 high-throughput sequencing instrument used to generate paired-end reads from prepared sequencing libraries (e.g., eCLIP libraries).\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"Oxford Nanopore Technologies (ONT) MinION/GridION (open data format ecosystem); MGI/DNBSEQ platforms\",\"docker_image\":null}"
+}

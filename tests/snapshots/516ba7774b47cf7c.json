@@ -1,0 +1,3 @@
+{
+  "response": "{\"methods\":[\"eCLIP-seq\",\"iCLIP\",\"UV crosslinking\",\"RNase I digestion\",\"immunoprecipitation\",\"protein gel electrophoresis\",\"nitrocellulose membrane transfer\",\"proteinase K treatment\",\"paired-end high-throughput sequencing\",\"PCR duplicate removal\",\"downsampling\",\"CLIPper peak calling\"],\"datasets\":[]}"
+}

@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Custom scripts\",\"description\":\"Custom scripts performing downsampling analysis by 100 iterations of randomly permuting uniquely mapped reads (BAM files), selecting the top N reads, and performing PCR duplicate removal to derive usable read counts at varying sequencing depths (downsampling curves).\",\"language\":\"Python\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

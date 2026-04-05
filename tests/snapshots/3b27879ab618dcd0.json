@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"SRA Toolkit / ERA download tools\",\"description\":\"A suite of command-line tools for downloading and converting sequencing data (e.g., FASTQ files) from the NCBI Sequence Read Archive (SRA) and EBI European Read Archive (ERA) public repositories.\",\"language\":\"C\",\"github_repo\":\"ncbi/sra-tools\",\"bioconda_package\":\"sra-tools\",\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"open_source\",\"open_source_alternative\":null,\"docker_image\":\"quay.io/biocontainers/sra-tools\"}"
+}

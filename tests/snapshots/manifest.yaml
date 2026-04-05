@@ -1,0 +1,60 @@
+# Snapshot manifest — frozen test fixtures for researcher-ai
+#
+# Refresh policy: quarterly, or when a test marked @pytest.mark.snapshot fails.
+# Refresh procedure: pytest tests/ --refresh-snapshots -m live
+#   (requires ANTHROPIC_API_KEY, NCBI_API_KEY, and network access)
+#
+# Tiers:
+#   snapshot — uses frozen artifacts in this directory; no live network
+#   live     — hits real APIs; excluded from CI; run manually pre-release
+
+version: "1.0"
+created: "2026-03-30"
+refresh_policy: "quarterly or on snapshot test failure"
+
+papers:
+  - pmid: "26971820"
+    title: "Robust transcriptome-wide discovery of RNA-binding protein binding sites with enhanced CLIP (eCLIP)"
+    doi: "10.1038/nmeth.3810"
+    pmcid: "PMC4878918"
+    paper_type: "experimental"
+    pdf_sha256: null          # set when PDF fixture is added
+    api_snapshot_date: "2026-03-30"
+    llm_model: "claude-sonnet-4-6"
+    assay_types:
+      - "eCLIP"
+      - "RNA-seq"
+    accessions:
+      - "GSE77695"
+    figure_count: 6           # main figures
+    anchors:
+      title: "Robust transcriptome-wide discovery of RNA-binding protein binding sites with enhanced CLIP (eCLIP)"
+      pmid: "26971820"
+      doi: "10.1038/nmeth.3810"
+    artifacts:
+      pubmed_xml: "api_responses/pubmed_26971820.json"
+      pmc_xml: "api_responses/pmc_PMC4878918.xml"
+      paper_parse: "llm_responses/paper_parse_26971820.json"
+      figure_parse: "llm_responses/figure_parse_26971820.json"
+      methods_parse: "llm_responses/methods_parse_26971820.json"
+
+  - pmid: "30423142"
+    title: "A large-scale binding and functional map of human RNA-binding proteins"
+    doi: "10.1038/s41586-020-2077-3"
+    pmcid: "PMC7217460"
+    paper_type: "experimental"
+    pdf_sha256: null
+    api_snapshot_date: "2026-03-30"
+    llm_model: "claude-sonnet-4-6"
+    assay_types:
+      - "eCLIP"
+    accessions:
+      - "ENCSR000EJD"
+    figure_count: 4
+    anchors:
+      pmid: "30423142"
+      doi: "10.1038/s41586-020-2077-3"
+    artifacts:
+      pubmed_xml: "api_responses/pubmed_30423142.json"
+      pmc_xml: "api_responses/pmc_PMC7217460.xml"
+      paper_parse: "llm_responses/paper_parse_30423142.json"

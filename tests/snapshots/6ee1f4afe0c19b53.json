@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"TRIzol extraction (standard protocol)\",\"description\":\"A reagent-based laboratory protocol for isolating total RNA from cells and tissues by phase separation using a monophasic solution of phenol and guanidine isothiocyanate.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"RNAzol RT (Molecular Research Center) or in-house acid guanidinium thiocyanate–phenol–chloroform (AGPC) extraction following the original Chomczynski & Sacchi method\",\"docker_image\":null}"
+}

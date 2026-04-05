@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Image Studio Lite\",\"description\":\"Image Studio Lite is a desktop software tool for acquiring, visualizing, and quantitating western blot and gel fluorescence images from LI-COR Odyssey and related infrared imaging systems, featuring background correction methods such as median local background subtraction.\",\"language\":\"unknown\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"freemium\",\"open_source_alternative\":\"ImageJ/Fiji\",\"docker_image\":null}"
+}

@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Custom PCR duplicate removal script\",\"description\":\"A custom script that removes PCR duplicate reads from BAM files by identifying duplicates sharing identical Read1 start position, Read2 start position, and random-mer sequence, yielding deduplicated 'Usable' reads.\",\"language\":\"unknown\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

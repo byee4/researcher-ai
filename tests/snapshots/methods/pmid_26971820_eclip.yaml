@@ -1,0 +1,169 @@
+# Snapshot fixture: eCLIP paper (PMID 26971820)
+# Van Nostrand et al. 2016, Nature Methods
+#
+# Source: manually curated from the published paper's Methods section.
+# This is a frozen, static fixture — do NOT update without re-deriving from
+# the live paper and committing the new expected_anchors.
+#
+# Usage: used by tests/test_methods_parser_snapshot.py (marked @pytest.mark.snapshot).
+# These tests parse the frozen methods_text through MethodsParser with a mocked
+# LLM that returns the frozen llm_responses below, then assert the anchors hold.
+
+pmid: "26971820"
+doi: "10.1038/nmeth.3810"
+title: "Robust transcriptome-wide discovery of RNA-binding protein binding sites with enhanced CLIP (eCLIP)"
+
+# Frozen methods section text excerpt (first ~1200 chars of actual methods).
+# Trimmed to exclude supplementary-only content to keep the fixture self-contained.
+methods_text: |
+  Cell culture and UV crosslinking
+  HEK293T cells were grown in DMEM supplemented with 10% FBS at 37°C with 5% CO2.
+  Cells were UV crosslinked at 254 nm (400 mJ/cm2) on ice using a Stratalinker 2400.
+
+  Immunoprecipitation and library preparation
+  Whole-cell lysate was prepared in iCLIP lysis buffer. Anti-FLAG (Sigma F1804) or
+  specific antibodies were used for immunoprecipitation. After on-bead RNA adapter
+  ligation and proteinase K digestion, RNA was reverse transcribed with AffinityScript.
+  Paired-end sequencing libraries were prepared using a modified eCLIP protocol.
+  Libraries were sequenced on the Illumina HiSeq 2500 (2x75 bp).
+
+  Computational analysis
+  Raw reads were adapter-trimmed with Cutadapt (v1.9) and aligned to the hg19 genome
+  using STAR (v2.4.0j) with --outFilterMultimapNmax 1. PCR duplicates were removed
+  using a custom UMI-aware deduplication script. Peak calling was performed with
+  CLIPper. eCLIP peaks were normalized against size-matched input controls to identify
+  enriched binding sites.
+
+# Frozen LLM responses to replay without a live API key.
+# Keys correspond to the output_schema class name used in ask_claude_structured calls.
+llm_responses:
+  _AssayList:
+    assay_names:
+      - "UV crosslinking and immunoprecipitation"
+      - "eCLIP library preparation"
+      - "Computational read processing and peak calling"
+
+  _AssayClassificationList:
+    assays:
+      - name: "UV crosslinking and immunoprecipitation"
+        method_category: "experimental"
+      - name: "eCLIP library preparation"
+        method_category: "experimental"
+      - name: "Computational read processing and peak calling"
+        method_category: "computational"
+
+  _AssayMeta_uv_crosslinking:
+    name: "UV crosslinking and immunoprecipitation"
+    description: "UV crosslinking of RNA-protein complexes followed by immunoprecipitation."
+    data_type: "sequencing"
+    raw_data_source: "GEO: GSE72987"
+    steps:
+      - step_number: 1
+        description: "UV crosslink cells at 254 nm, 400 mJ/cm2."
+        input_data: "Live HEK293T cells"
+        output_data: "Crosslinked cell pellet"
+        software: null
+        parameters: {"wavelength_nm": "254", "dose_mJ_cm2": "400"}
+      - step_number: 2
+        description: "Lyse cells and immunoprecipitate RNA-protein complexes."
+        input_data: "Crosslinked cell pellet"
+        output_data: "Immunoprecipitated RNA-protein complexes"
+        software: null
+        parameters: {}
+    figures_produced: ["Figure 1"]
+
+  _AssayMeta_library_prep:
+    name: "eCLIP library preparation"
+    description: "On-bead adapter ligation, reverse transcription, and paired-end library construction."
+    data_type: "sequencing"
+    raw_data_source: null
+    steps:
+      - step_number: 1
+        description: "Ligate RNA adapter on-bead and digest protein with proteinase K."
+        input_data: "Immunoprecipitated RNA-protein complexes"
+        output_data: "Free RNA with adapter"
+        software: null
+        parameters: {}
+      - step_number: 2
+        description: "Reverse transcribe RNA to cDNA and construct paired-end library."
+        input_data: "Free RNA with adapter"
+        output_data: "Sequencing-ready library (FASTQ)"
+        software: "AffinityScript"
+        parameters: {}
+    figures_produced: []
+
+  _AssayMeta_computational:
+    name: "Computational read processing and peak calling"
+    description: "Adapter trimming, alignment, deduplication, and CLIPper peak calling."
+    data_type: "sequencing"
+    raw_data_source: null
+    steps:
+      - step_number: 1
+        description: "Trim adapters from raw reads."
+        input_data: "Raw FASTQ reads"
+        output_data: "Trimmed FASTQ reads"
+        software: "Cutadapt"
+        software_version: "1.9"
+        parameters: {}
+      - step_number: 2
+        description: "Align reads to hg19 genome, allowing only unique mappers."
+        input_data: "Trimmed FASTQ reads"
+        output_data: "Aligned BAM files"
+        software: "STAR"
+        software_version: "2.4.0j"
+        parameters: {"outFilterMultimapNmax": "1"}
+      - step_number: 3
+        description: "Remove PCR duplicates using UMI-aware deduplication."
+        input_data: "Aligned BAM files"
+        output_data: "Deduplicated BAM files"
+        software: null
+        parameters: {}
+      - step_number: 4
+        description: "Call peaks with CLIPper and normalize against size-matched input."
+        input_data: "Deduplicated BAM files"
+        output_data: "Normalized eCLIP peaks (BED)"
+        software: "CLIPper"
+        parameters: {}
+    figures_produced: ["Figure 2", "Figure 3"]
+
+  _DependencyList:
+    dependencies:
+      - upstream_assay: "UV crosslinking and immunoprecipitation"
+        downstream_assay: "eCLIP library preparation"
+        dependency_type: "raw_material"
+        description: "IP'd RNA-protein complexes are the input to library preparation."
+      - upstream_assay: "eCLIP library preparation"
+        downstream_assay: "Computational read processing and peak calling"
+        dependency_type: "raw_data"
+        description: "Sequencing FASTQ files feed the computational pipeline."
+
+  _AvailabilityStatement:
+    data_statement: "Data deposited at GEO under accession GSE72987."
+    code_statement: "eCLIP analysis pipeline available at https://github.com/YeoLab/eCLIP."
+
+# Expected output anchors — assertions that must hold after parsing this fixture.
+# These are structural, not exact-value, to tolerate minor LLM prompt changes.
+expected_anchors:
+  assay_count: 3
+  assay_names:
+    - "UV crosslinking and immunoprecipitation"
+    - "eCLIP library preparation"
+    - "Computational read processing and peak calling"
+  dependency_count: 2
+  dependency_edges:
+    - upstream: "UV crosslinking and immunoprecipitation"
+      downstream: "eCLIP library preparation"
+    - upstream: "eCLIP library preparation"
+      downstream: "Computational read processing and peak calling"
+  data_availability_contains: "GSE72987"
+  code_availability_contains: "github"
+  parse_warnings_empty: true
+  # Classification: each assay should have the correct method_category
+  assay_categories:
+    "UV crosslinking and immunoprecipitation": "experimental"
+    "eCLIP library preparation": "experimental"
+    "Computational read processing and peak calling": "computational"
+  # Step ordering: computational assay should have steps 1→2→3→4
+  computational_assay_step_count: 4
+  computational_assay_first_step_software: "Cutadapt"
+  computational_assay_last_step_software: "CLIPper"

@@ -1,0 +1,29 @@
+version: 1
+cases:
+  - case_id: pmc90000004_fig4
+    paper:
+      title: "Synthetic paper four"
+      source: pmcid
+      source_path: PMC90000004
+      pmcid: PMC90000004
+      paper_type: experimental
+    baseline:
+      figures:
+        - figure_id: "Figure 4"
+          title: "Figure 4"
+          caption: "caption"
+          purpose: "purpose"
+          subfigures:
+            - label: "A"
+              description: "A"
+              plot_type: venn
+              plot_category: flow
+            - label: "B"
+              description: "B"
+              plot_type: upset
+              plot_category: flow
+    expected:
+      - figure_id: "Figure 4"
+        panels:
+          A: { plot_type: venn }
+          B: { plot_type: upset }

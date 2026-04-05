@@ -1,0 +1,31 @@
+name: researcher_ai_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.10
+  - pip
+  - cutadapt=1.9.dev1
+  - star=2.4.0i
+  - clipper=1.0
+  - homer
+  - idr=2012
+  - sra-tools
+  - imagej
+  - illumina hiseq
+  - custom scripts (illumina hiseq demultiplexing + in-house inline barcode demultiplexing)
+  - custom pcr duplicate removal script
+  - custom scripts
+  - custom normalization scripts
+  - custom downsampling scripts
+  - custom annotation scripts
+  - perl
+  - matlab with distributionplot package
+  - trizol extraction (standard protocol)
+  - superscript iii
+  - phusion dna polymerase
+  - image studio lite
+  - wt expression kit (ambion)
+  - affymetrix expression console
+  - custom code

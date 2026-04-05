@@ -1,0 +1,3 @@
+{
+  "response": "{\"commands\":[{\"command_template\":\"hiSeqDemultiplex.py {raw_fastq}\",\"description\":\"Standard Illumina HiSeq demultiplexing of raw FASTQ reads from sequencing\",\"required_inputs\":[\"Raw FASTQ reads from HiSeq sequencing\"],\"outputs\":[\"Demultiplexed FASTQ reads\"],\"parameters\":{}},{\"command_template\":\"inline_barcode_demux.py {demultiplexed_fastq} --append-umi\",\"description\":\"In-house inline barcode demultiplexing of eCLIP libraries with random-mer (UMI) appended to the read name for later use\",\"required_inputs\":[\"Demultiplexed FASTQ reads\"],\"outputs\":[\"Demultiplexed FASTQ reads with random-mer appended to read names\"],\"parameters\":{\"--append-umi\":\"appends random-mer (UMI) to read name\"}}]}"
+}

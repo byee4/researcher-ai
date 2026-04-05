@@ -1,0 +1,29 @@
+version: 1
+cases:
+  - case_id: pmc90000003_fig3
+    paper:
+      title: "Synthetic paper three"
+      source: pmcid
+      source_path: PMC90000003
+      pmcid: PMC90000003
+      paper_type: computational
+    baseline:
+      figures:
+        - figure_id: "Figure 3"
+          title: "Figure 3"
+          caption: "caption"
+          purpose: "purpose"
+          subfigures:
+            - label: "A"
+              description: "A"
+              plot_type: tsne
+              plot_category: dimensionality
+            - label: "B"
+              description: "B"
+              plot_type: scatter
+              plot_category: relational
+    expected:
+      - figure_id: "Figure 3"
+        panels:
+          A: { plot_type: tsne }
+          B: { plot_type: scatter }

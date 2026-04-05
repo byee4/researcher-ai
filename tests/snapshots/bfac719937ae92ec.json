@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Q5\",\"description\":\"High-fidelity DNA polymerase used for PCR amplification of cDNA libraries and other molecular biology applications, offering low error rates and robust performance across a range of templates.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"Phusion High-Fidelity DNA Polymerase (Thermo Fisher)\",\"docker_image\":null}"
+}

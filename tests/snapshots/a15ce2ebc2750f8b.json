@@ -1,0 +1,3 @@
+{
+  "response": "{\"commands\":[{\"command_template\":\"fastq-dump {accession}\",\"description\":\"Download raw CLIP-seq sequencing reads (iCLIP, HITS-CLIP, PAR-CLIP) from public repositories (e.g., SRA/ERA) using accession numbers listed in Supplementary Table 1.\",\"required_inputs\":[\"Public CLIP-seq dataset accession numbers (Supplementary Table 1)\"],\"outputs\":[\"FASTQ files (raw sequencing reads)\"],\"parameters\":{\"{accession}\":\"SRA/ERA accession number (e.g., SRRxxxxxxx / ERRxxxxxxx) from Supplementary Table 1\"}}]}"
+}

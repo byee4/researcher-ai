@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Custom annotation scripts\",\"description\":\"Custom scripts that annotate CLIPper peak/cluster calls with genic region types and generate cluster location pie charts by counting the total number of bases covered by peaks for each genic region category (e.g., UTR, CDS, intron).\",\"language\":\"Python\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

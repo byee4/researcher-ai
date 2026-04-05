@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Custom scripts (Illumina HiSeq demultiplexing + custom inline barcode demultiplexing)\",\"description\":\"Custom pipeline scripts that perform a two-step demultiplexing process: standard Illumina HiSeq demultiplexing followed by a secondary demultiplexing step for libraries with distinct inline barcodes, appending the random-mer (UMI) to the read name in the output FASTQ for downstream deduplication.\",\"language\":\"unknown\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

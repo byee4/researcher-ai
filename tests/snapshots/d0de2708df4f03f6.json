@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"UCSC Genome Browser\",\"description\":\"A web-based genome browser for visualizing genomic data tracks (e.g., RPM-normalized read coverage) aligned to reference genomes across a wide range of species.\",\"language\":\"C\",\"github_repo\":\"ucscGenomeBrowser/kent\",\"bioconda_package\":\"ucsc-genome-browser\",\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"freemium\",\"open_source_alternative\":null,\"docker_image\":\"quay.io/ucsc_cgl/genome-browser\"}"
+}

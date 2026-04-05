@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Phusion DNA Polymerase\",\"description\":\"A high-fidelity thermostable DNA polymerase used for PCR amplification, offering low error rates and robust performance for applications such as detecting exon inclusion and exclusion isoforms from cDNA templates.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"Q5 High-Fidelity DNA Polymerase (NEB) or Pfu DNA Polymerase (open research reagents)\",\"docker_image\":null}"
+}

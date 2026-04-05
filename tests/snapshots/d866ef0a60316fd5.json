@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Matlab with distributionPlot package\",\"description\":\"MATLAB-based tool using the distributionPlot package to generate usable read density plots and smoothed kernel density histograms from aligned and deduplicated read counts.\",\"language\":\"MATLAB\",\"github_repo\":\"raacampbell/distributionPlot\",\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"freemium\",\"open_source_alternative\":\"Python (matplotlib/seaborn) or R (ggplot2/ggdist) for kernel density and distribution plots\",\"docker_image\":null}"
+}

@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"T4 RNA Ligase\",\"description\":\"A bacteriophage T4-derived enzyme that catalyzes the ligation of RNA adapters to the 3′ end of RNA fragments, commonly used in CLIP-seq and related protocols to attach barcoded adapters to RNA for subsequent sequencing library preparation.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

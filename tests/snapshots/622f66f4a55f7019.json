@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"UCSC Genome Browser (custom normalization)\",\"description\":\"RPM-normalization of BAM read tracks against the total number of usable reads in each dataset for visualization as genome browser tracks on the UCSC Genome Browser.\",\"language\":\"JavaScript\",\"github_repo\":\"ucscGenomeBrowser/kent\",\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"open_source\",\"open_source_alternative\":null,\"docker_image\":\"quay.io/biocontainers/ucsc-tools\"}"
+}

@@ -1,0 +1,3 @@
+{
+  "response": "{\"commands\":[{\"command_template\":\"custom_scripts merge_barcodes {per_barcode_deduplicated_bam_files} > {merged_usable_reads_bam}\",\"description\":\"Merge per-barcode deduplicated 'Usable' reads BAM files into a single merged 'Usable' reads BAM file for eCLIP datasets with multiple inline barcodes, prior to peak calling.\",\"required_inputs\":[\"Per-barcode deduplicated 'Usable' reads BAM files\"],\"outputs\":[\"Merged 'Usable' reads BAM file\"],\"parameters\":{}}]}"
+}

@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Affymetrix Expression Console\",\"description\":\"Desktop software for scanning, quality control, and RMA normalization of Affymetrix microarray probe intensity data (e.g., HTA 2.0 chips).\",\"language\":\"Java\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"affy (Bioconductor R package) or oligo (Bioconductor R package) for RMA normalization of Affymetrix arrays\",\"docker_image\":null}"
+}

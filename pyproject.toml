@@ -1,0 +1,57 @@
+[project]
+name = "researcher-ai"
+version = "0.1.0"
+description = "Recreate a publication's analysis from raw data"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "httpx",
+    "beautifulsoup4",
+    "lxml",
+    "pysradb",
+    "biopython",
+    "pdfplumber",
+    "Pillow",
+    "nbformat",
+    "PyYAML",
+    "anthropic",
+    "openai",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "nbconvert"]
+jupyter = ["jupyterlab", "ipywidgets", "nbconvert"]
+all = ["pytest", "pytest-cov", "ruff", "mypy", "jupyterlab", "ipywidgets", "nbconvert"]
+docs = [
+    "sphinx>=7.0",
+    "furo>=2024.1.29",
+    "myst-parser>=2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+plugins = ["pydantic.mypy"]
+strict = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+cache_dir = "/tmp/researcher-ai-pytest-cache"
+markers = [
+    "snapshot: integration tests using frozen API/LLM fixtures (no live network)",
+    "live: end-to-end tests requiring live API keys and network access",
+]
+filterwarnings = [
+    "ignore::nbformat.warnings.MissingIDFieldWarning",
+]

@@ -1,0 +1,164 @@
+version: 1
+rules:
+  - rule_id: pmc11633308_fig1_abc
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*1$"
+      panel_labels: ["a", "b", "c"]
+    actions:
+      plot_type: bar
+      plot_category: composite
+      layers: ["bar", "stacked_bar"]
+      n_facets: 2
+      facet_variable: left_right_panel
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig1_abc
+
+  - rule_id: pmc11633308_fig1a_axes
+    scope: paper
+    enabled: true
+    priority: 110
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*1$"
+      panel_labels: ["a"]
+    actions:
+      x_axis_label: "Residual % Increase Compared to Batch Model"
+      x_axis_scale: categorical
+      y_axis_label: "ZFPs with High DEG Residual"
+      y_axis_scale: categorical
+      evidence_tag: calibration_rule:pmc11633308_fig1a_axes
+
+  - rule_id: pmc11633308_fig2a
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["a"]
+    actions:
+      plot_type: venn
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2a
+
+  - rule_id: pmc11633308_fig2b
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["b"]
+    actions:
+      plot_type: stacked_bar
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2b
+
+  - rule_id: pmc11633308_fig2c
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["c"]
+    actions:
+      plot_type: tsne
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2c
+
+  - rule_id: pmc11633308_fig2d
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["d"]
+    actions:
+      plot_type: stacked_bar
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2d
+
+  - rule_id: pmc11633308_fig2e
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["e"]
+    actions:
+      plot_type: stacked_bar
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2e
+
+  - rule_id: pmc11633308_fig2f
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["f"]
+    actions:
+      plot_type: bubble
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2f
+
+  - rule_id: pmc11633308_fig2g
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["g"]
+    actions:
+      plot_type: upset
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2g
+
+  - rule_id: pmc11633308_fig2h
+    scope: paper
+    enabled: true
+    priority: 100
+    match:
+      pmcid: PMC11633308
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*2$"
+      panel_labels: ["h"]
+    actions:
+      plot_type: bar
+      confidence: 0.99
+      evidence_tag: calibration_rule:pmc11633308_fig2h
+
+  # Example family-level rule (disabled by default).
+  - rule_id: family_example_nature_tsne
+    scope: family
+    enabled: false
+    priority: 10
+    match:
+      title_pattern: "nature"
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*\\d+$"
+      panel_labels: ["c"]
+    actions:
+      plot_type: tsne
+      confidence: 0.8
+      evidence_tag: calibration_rule:family_example_nature_tsne
+
+  # Example global rule (disabled by default).
+  - rule_id: global_example_default_bar
+    scope: global
+    enabled: false
+    priority: 1
+    match:
+      figure_id_pattern: "^fig(?:ure)?\\.?\\s*\\d+$"
+      panel_labels: ["h"]
+    actions:
+      plot_type: bar
+      confidence: 0.7
+      evidence_tag: calibration_rule:global_example_default_bar

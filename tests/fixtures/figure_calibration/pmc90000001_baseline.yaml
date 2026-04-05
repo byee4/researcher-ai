@@ -1,0 +1,29 @@
+version: 1
+cases:
+  - case_id: pmc90000001_fig1
+    paper:
+      title: "Synthetic paper one"
+      source: pmcid
+      source_path: PMC90000001
+      pmcid: PMC90000001
+      paper_type: experimental
+    baseline:
+      figures:
+        - figure_id: "Figure 1"
+          title: "Figure 1"
+          caption: "caption"
+          purpose: "purpose"
+          subfigures:
+            - label: "A"
+              description: "A"
+              plot_type: bar
+              plot_category: categorical
+            - label: "B"
+              description: "B"
+              plot_type: line
+              plot_category: relational
+    expected:
+      - figure_id: "Figure 1"
+        panels:
+          A: { plot_type: bar }
+          B: { plot_type: line }

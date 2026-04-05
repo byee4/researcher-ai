@@ -1,0 +1,29 @@
+version: 1
+cases:
+  - case_id: pmc90000002_fig2
+    paper:
+      title: "Synthetic paper two"
+      source: pmcid
+      source_path: PMC90000002
+      pmcid: PMC90000002
+      paper_type: experimental
+    baseline:
+      figures:
+        - figure_id: "Figure 2"
+          title: "Figure 2"
+          caption: "caption"
+          purpose: "purpose"
+          subfigures:
+            - label: "A"
+              description: "A"
+              plot_type: heatmap
+              plot_category: matrix
+            - label: "B"
+              description: "B"
+              plot_type: violin
+              plot_category: categorical
+    expected:
+      - figure_id: "Figure 2"
+        panels:
+          A: { plot_type: heatmap }
+          B: { plot_type: violin }

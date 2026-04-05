@@ -1,0 +1,86 @@
+version: 1
+cases:
+  - case_id: pmc11633308_fig1_fig2
+    paper:
+      title: "Benchmark paper"
+      source: pmcid
+      source_path: PMC11633308
+      pmcid: PMC11633308
+      paper_type: experimental
+    baseline:
+      figures:
+        - figure_id: "Figure 1"
+          title: "Figure 1"
+          caption: "Benchmark caption"
+          purpose: "Benchmark purpose"
+          subfigures:
+            - label: "A"
+              description: "Panel A"
+              plot_type: other
+              plot_category: composite
+            - label: "B"
+              description: "Panel B"
+              plot_type: other
+              plot_category: composite
+            - label: "C"
+              description: "Panel C"
+              plot_type: other
+              plot_category: composite
+        - figure_id: "Figure 2"
+          title: "Figure 2"
+          caption: "Benchmark caption"
+          purpose: "Benchmark purpose"
+          subfigures:
+            - label: "A"
+              description: "Panel A"
+              plot_type: other
+              plot_category: composite
+            - label: "B"
+              description: "Panel B"
+              plot_type: other
+              plot_category: composite
+            - label: "C"
+              description: "Panel C"
+              plot_type: other
+              plot_category: composite
+            - label: "D"
+              description: "Panel D"
+              plot_type: other
+              plot_category: composite
+            - label: "E"
+              description: "Panel E"
+              plot_type: other
+              plot_category: composite
+            - label: "F"
+              description: "Panel F"
+              plot_type: other
+              plot_category: composite
+            - label: "G"
+              description: "Panel G"
+              plot_type: other
+              plot_category: composite
+            - label: "H"
+              description: "Panel H"
+              plot_type: other
+              plot_category: composite
+    expected:
+      - figure_id: "Figure 1"
+        panels:
+          A:
+            plot_type: bar
+            x_axis_label: "Residual % Increase Compared to Batch Model"
+            y_axis_label: "ZFPs with High DEG Residual"
+          B:
+            plot_type: bar
+          C:
+            plot_type: bar
+      - figure_id: "Figure 2"
+        panels:
+          A: { plot_type: venn }
+          B: { plot_type: stacked_bar }
+          C: { plot_type: tsne }
+          D: { plot_type: stacked_bar }
+          E: { plot_type: stacked_bar }
+          F: { plot_type: bubble }
+          G: { plot_type: upset }
+          H: { plot_type: bar }

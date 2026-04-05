@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"custom code\",\"description\":\"Custom statistical analysis script performing Student's t-test on per-gene-normalized residuals for inclusion and exclusion probes to identify robust splicing changes, using p-value thresholds and SepScore (normalized change in exclusion minus normalized change in inclusion) to identify differentially spliced cassette exons per shRNA.\",\"language\":\"unknown\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

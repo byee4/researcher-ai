@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"SuperScript III\",\"description\":\"A reverse transcriptase enzyme kit used to synthesize first-strand cDNA from RNA templates, commonly used in RT-PCR and cDNA library preparation workflows.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"SuperScript III is a wet-lab reagent/enzyme kit (Thermo Fisher Scientific), not software; open alternatives include M-MLV Reverse Transcriptase (NEB) or AMV Reverse Transcriptase\",\"docker_image\":null}"
+}

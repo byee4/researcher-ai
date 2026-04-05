@@ -1,0 +1,3 @@
+{
+  "response": "{\"commands\":[{\"command_template\":\"python clipper_location_annotation.py --input {clipper_peaks} --output {pie_chart}\",\"description\":\"Annotates CLIPper peak/cluster calls by counting total bases covered by peaks for each genic region type, then generates pie charts showing distribution across genic region types.\",\"required_inputs\":[\"CLIPper peak/cluster calls (BED or similar format)\"],\"outputs\":[\"Cluster location pie charts showing distribution across genic region types\"],\"parameters\":{\"--input\":\"{clipper_peaks}\",\"--output\":\"{pie_chart}\"}}]}"
+}

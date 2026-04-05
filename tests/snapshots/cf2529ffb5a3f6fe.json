@@ -1,0 +1,3 @@
+{
+  "response": "{\"dependencies\":[{\"upstream_assay\":\"eCLIP-seq library preparation\",\"downstream_assay\":\"eCLIP-seq data processing\",\"dependency_type\":\"input_data\",\"description\":\"Raw sequencing output from the eCLIP-seq library preparation (sequenced on Illumina HiSeq 2500/4000) serves as the direct input for eCLIP-seq data processing.\"}]}"
+}

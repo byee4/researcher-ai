@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "generated_by": "researcher-ai",
+    "pmid": "26971820",
+    "doi": "10.1038/nmeth.3810",
+    "title": "Robust transcriptome-wide discovery of RNA-binding protein binding sites with enhanced CLIP (eCLIP)",
+    "journal": "Nature Methods",
+    "year": 2016,
+    "paper_type": "experimental"
+  },
+  "datasets": [
+    {
+      "accession": "GSE77695",
+      "source": "GEO",
+      "title": "eCLIP-seq of RNA-binding proteins in HEK293T and K562 cells",
+      "organism": "Homo sapiens",
+      "experiment_type": "eCLIP",
+      "total_samples": 226
+    }
+  ],
+  "assays": [
+    {
+      "name": "eCLIP",
+      "data_type": "sequencing",
+      "raw_data_source": "GEO: GSE77695",
+      "steps": [
+        {
+          "step_number": 1,
+          "software": "Cutadapt",
+          "version": "1.9",
+          "description": "Adapter trimming with quality cutoff q=6 and minimum length 18 nt"
+        },
+        {
+          "step_number": 2,
+          "software": "STAR",
+          "version": "2.4.0j",
+          "description": "Alignment to hg19 with --outFilterMultimapNmax 1 (unique alignments only)"
+        },
+        {
+          "step_number": 3,
+          "software": "umi_tools",
+          "version": null,
+          "description": "UMI-aware PCR duplicate removal"
+        },
+        {
+          "step_number": 4,
+          "software": "CLIPper",
+          "version": null,
+          "description": "Peak calling on deduplicated BAM files"
+        },
+        {
+          "step_number": 5,
+          "software": "CLIPper",
+          "version": null,
+          "description": "Normalization of eCLIP peaks against size-matched input controls"
+        }
+      ]
+    }
+  ],
+  "software": [
+    {
+      "name": "Cutadapt",
+      "version": "1.9",
+      "bioconda_package": "cutadapt"
+    },
+    {
+      "name": "STAR",
+      "version": "2.4.0j",
+      "bioconda_package": "star"
+    },
+    {
+      "name": "CLIPper",
+      "version": null,
+      "pypi_package": "clipper"
+    },
+    {
+      "name": "umi_tools",
+      "version": "1.1.5",
+      "bioconda_package": "umi_tools"
+    },
+    {
+      "name": "samtools",
+      "version": null,
+      "bioconda_package": "samtools"
+    }
+  ],
+  "pipeline": {
+    "backend": "snakemake",
+    "nf_core_pipeline": null,
+    "steps": [
+      {
+        "step_id": "cutadapt_trim",
+        "depends_on": []
+      },
+      {
+        "step_id": "fastqc",
+        "depends_on": ["cutadapt_trim"]
+      },
+      {
+        "step_id": "star_align",
+        "depends_on": ["cutadapt_trim"]
+      },
+      {
+        "step_id": "umi_dedup",
+        "depends_on": ["star_align"]
+      },
+      {
+        "step_id": "clipper_peaks",
+        "depends_on": ["umi_dedup"]
+      },
+      {
+        "step_id": "normalize_peaks",
+        "depends_on": ["clipper_peaks"]
+      },
+      {
+        "step_id": "multiqc",
+        "depends_on": ["fastqc", "star_align"]
+      }
+    ]
+  }
+}

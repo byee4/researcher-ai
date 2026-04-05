@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"RNase I\",\"description\":\"A ribonuclease enzyme used in CLIP-seq and related protocols to digest single-stranded RNA in UV-crosslinked cell lysates, fragmenting RNA to a defined size range for downstream immunoprecipitation and sequencing steps.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

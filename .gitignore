@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Notebook / test artifacts
+.ipynb_checkpoints/
+.pytest_cache/
+pytest-cache-files-*/
+
+# Local env / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Build/docs output
+docs/_build/
+
+# Local run outputs
+parse_results/
+*.log
+
+# Coverage
+.coverage
+htmlcov/

@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Perl (Chi-Square); R (Fisher Exact Test)\",\"description\":\"Calculates fold-enrichment of eCLIP over SMInput at each peak (normalised by total usable read counts) and computes enrichment p-values using Yates' Chi-Square test (Perl, primary) or Fisher's Exact Test (R, when observed or expected read counts are below 5).\",\"language\":\"Perl; R\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"open_source\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

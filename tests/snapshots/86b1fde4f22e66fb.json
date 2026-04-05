@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Proteinase K\",\"description\":\"A broad-spectrum serine protease enzyme used in molecular biology to digest and remove proteins (such as RNA-binding proteins) from nucleic acid complexes, commonly used in CLIP-seq and related protocols to release crosslinked RNA from nitrocellulose membranes after RBP immunoprecipitation.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

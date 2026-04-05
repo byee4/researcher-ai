@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"MATLAB\",\"description\":\"A numerical computing and programming environment used in bioinformatics for data analysis, visualization, and algorithm development, including generating read density plots and smoothed kernel density histograms for genomic data quality assessment.\",\"language\":\"MATLAB\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"Octave\",\"docker_image\":null}"
+}

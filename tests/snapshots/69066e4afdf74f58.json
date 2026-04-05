@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"WT Expression Kit (Ambion)\",\"description\":\"A commercial sample preparation kit by Ambion (Thermo Fisher Scientific) that amplifies and labels total RNA for whole-transcript microarray hybridization, converting as little as 100 ng of total RNA into amplified, labeled cRNA/cDNA targets suitable for Affymetrix GeneChip arrays.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"affy (Bioconductor R package for Affymetrix microarray preprocessing)\",\"docker_image\":null}"
+}

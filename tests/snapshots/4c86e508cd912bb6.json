@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Affymetrix Expression Console\",\"description\":\"Desktop software for Affymetrix microarray data processing, including RMA normalization of probe signals from CEL files to generate normalized probe-level expression values.\",\"language\":\"Java\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"affy (Bioconductor R package) or oligo (Bioconductor R package) for RMA normalization of Affymetrix CEL files\",\"docker_image\":null}"
+}

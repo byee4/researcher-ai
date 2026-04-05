@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Perl / R\",\"description\":\"Calculates enrichment p-values for each peak using Yates' Chi-Square test (or Fisher Exact Test when observed or expected read counts are below 5), comparing per-peak eCLIP and SMInput read counts to produce per-peak enrichment p-values.\",\"language\":\"Perl, R\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"open_source\",\"open_source_alternative\":null,\"docker_image\":null}"
+}

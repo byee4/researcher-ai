@@ -1,0 +1,3 @@
+{
+  "response": "{\"commands\":[{\"command_template\":\"custom_annotation_script --input {clipper_peaks} --output {pie_chart}\",\"description\":\"Counts total bases covered by peaks for each genic region type to generate cluster location pie charts.\",\"required_inputs\":[\"CLIPper peak/cluster calls\",\"genic region annotations\"],\"outputs\":[\"Cluster location pie charts\"],\"parameters\":{}}]}"
+}

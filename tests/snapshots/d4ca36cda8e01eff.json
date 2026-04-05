@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Phusion DNA Polymerase\",\"description\":\"A high-fidelity thermostable DNA polymerase used for PCR amplification, offering superior accuracy and speed for amplifying DNA templates including splicing product isoforms from cDNA.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"Q5 High-Fidelity DNA Polymerase (NEB) or Platinum SuperFi DNA Polymerase (Thermo Fisher) are comparable commercial reagents; no open-source equivalent exists for a physical enzyme reagent\",\"docker_image\":null}"
+}

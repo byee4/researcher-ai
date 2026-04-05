@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"ENCODE IDR Pipeline\",\"description\":\"Applies the Irreproducibility Discovery Rate (IDR) framework to ranked peak lists from ChIP-seq or eCLIP experiments to identify statistically reproducible peaks across biological or technical replicates.\",\"language\":\"Python\",\"github_repo\":\"nboley/idr\",\"bioconda_package\":\"idr\",\"pypi_package\":\"idr\",\"cran_package\":null,\"license_type\":\"open_source\",\"open_source_alternative\":null,\"docker_image\":\"quay.io/biocontainers/idr\"}"
+}

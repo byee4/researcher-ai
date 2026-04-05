@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"ImageJ\",\"description\":\"A public domain image processing and analysis program widely used in biology to quantify band intensities from gel images (e.g., for calculating percent spliced in / PSI values) and perform other scientific image measurements.\",\"language\":\"Java\",\"github_repo\":\"imagej/ImageJ\",\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"open_source\",\"open_source_alternative\":null,\"docker_image\":\"quay.io/biocontainers/imagej\"}"
+}

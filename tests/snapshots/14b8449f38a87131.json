@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"AffinityScript\",\"description\":\"A reverse transcriptase enzyme used to convert RNA into complementary DNA (cDNA) for downstream molecular biology applications.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"SuperScript III/IV (Thermo Fisher) or M-MLV Reverse Transcriptase (various open/academic suppliers)\",\"docker_image\":null}"
+}

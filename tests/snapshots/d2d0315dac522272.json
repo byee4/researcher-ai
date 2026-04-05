@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"SuperScript III\",\"description\":\"A reverse transcriptase enzyme (Moloney Murine Leukemia Virus-based) used to synthesize complementary DNA (cDNA) from total RNA or mRNA templates for downstream applications such as RT-PCR and gene expression analysis.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"M-MLV Reverse Transcriptase (available from multiple open/academic suppliers; protocol-compatible open alternatives include AMV Reverse Transcriptase)\",\"docker_image\":null}"
+}

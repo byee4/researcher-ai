@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"SuperScript III\",\"description\":\"Reverse transcriptase enzyme used to synthesize cDNA from RNA templates for RT-PCR and other molecular biology applications.\",\"language\":null,\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"SuperScript III is a proprietary reagent by Thermo Fisher Scientific; open-source/free alternatives include M-MLV Reverse Transcriptase or AMV Reverse Transcriptase from various suppliers\",\"docker_image\":null}"
+}

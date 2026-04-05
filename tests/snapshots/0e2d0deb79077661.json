@@ -1,0 +1,3 @@
+{
+  "response": "{\"commands\":[{\"command_template\":\"fastq-dump {accession}\",\"description\":\"Download raw sequencing data (iCLIP, HITS-CLIP, and PAR-CLIP datasets) from SRA/ERA as FASTQ files\",\"required_inputs\":[\"SRA/ERA accession numbers (listed in Supplementary Table 1)\"],\"outputs\":[\"FASTQ files (raw sequencing reads)\"],\"parameters\":{\"accession\":\"{SRA/ERA accession from Supplementary Table 1}\"}}]}"
+}

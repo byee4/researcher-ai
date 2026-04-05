@@ -1,0 +1,3 @@
+{
+  "response": "{\"paper_type\":\"experimental\",\"reasoning\":\"This paper describes the development of a novel experimental protocol (eCLIP) for identifying RNA-binding protein (RBP) binding sites. The authors developed and validated a new wet-lab methodology, generated 102 eCLIP experiments across 73 RBPs in HepG2 and K562 cell lines, and demonstrated its technical improvements over existing CLIP protocols. The work is fundamentally focused on the development and application of a new experimental technique, with data deposited in the ENCODE project repository.\"}"
+}

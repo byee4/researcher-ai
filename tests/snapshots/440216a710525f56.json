@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"HOMER findMotifs\",\"description\":\"De novo and known motif discovery tool that identifies enriched sequence motifs in genomic regions (DNA or RNA) compared to background sequences, used here for finding enriched RNA-binding protein motifs in iCLIP/eCLIP clusters.\",\"language\":\"Perl\",\"github_repo\":\"andrewdavidsmith/homer\",\"bioconda_package\":\"homer\",\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"open_source\",\"open_source_alternative\":null,\"docker_image\":\"quay.io/biocontainers/homer\"}"
+}

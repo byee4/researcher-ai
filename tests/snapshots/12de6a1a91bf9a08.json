@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Image Studio Lite\",\"description\":\"Software for quantitative western blot analysis and fluorescent imaging data, supporting background correction methods such as median local background correction for quantitation of protein band intensities from Odyssey and other fluorescent imagers.\",\"language\":\"unknown\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"closed_source\",\"open_source_alternative\":\"FIJI/ImageJ\",\"docker_image\":null}"
+}

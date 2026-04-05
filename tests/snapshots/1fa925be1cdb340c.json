@@ -1,0 +1,3 @@
+{
+  "response": "{\"name\":\"Custom annotation script\",\"description\":\"Annotates CLIP-seq peaks/clusters by counting total bases covered by peaks for each genic region type (e.g., exon, intron, UTR) and generates pie charts showing the distribution of cluster locations across genic region types.\",\"language\":\"Python\",\"github_repo\":null,\"bioconda_package\":null,\"pypi_package\":null,\"cran_package\":null,\"license_type\":\"unknown\",\"open_source_alternative\":null,\"docker_image\":null}"
+}
