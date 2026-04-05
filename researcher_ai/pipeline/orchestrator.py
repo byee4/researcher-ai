@@ -1,0 +1,232 @@
+"""State-graph workflow orchestrator for researcher-ai.
+
+Phase 4 architecture:
+- Uses a LangGraph state machine when available.
+- Falls back to deterministic sequential execution if LangGraph is unavailable.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Optional, TypedDict
+
+from researcher_ai.models.dataset import Dataset
+from researcher_ai.models.method import Method
+from researcher_ai.models.paper import Paper, PaperSource
+from researcher_ai.models.pipeline import Pipeline
+from researcher_ai.models.software import Software
+from researcher_ai.parsers.data.geo_parser import GEOParser
+from researcher_ai.parsers.data.sra_parser import SRAParser
+from researcher_ai.parsers.figure_parser import FigureParser
+from researcher_ai.parsers.methods_parser import MethodsParser
+from researcher_ai.parsers.paper_parser import PaperParser
+from researcher_ai.parsers.software_parser import SoftwareParser
+from researcher_ai.pipeline.builder import PipelineBuilder
+
+try:  # pragma: no cover - optional runtime dependency
+    from langgraph.graph import END, StateGraph
+
+    _HAS_LANGGRAPH = True
+except Exception:  # pragma: no cover - optional runtime dependency
+    END = "__end__"
+    StateGraph = None
+    _HAS_LANGGRAPH = False
+
+
+_ACC_RE = re.compile(
+    r"\b("
+    r"GSE\d{4,8}|GSM\d{4,8}|GDS\d{3,7}|GPL\d{3,7}|"
+    r"SRP\d{4,9}|SRX\d{4,9}|SRR\d{4,9}|ERP\d{4,9}|ERR\d{4,9}|"
+    r"PRJNA\d{4,9}|PRJEB\d{4,9}"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+class WorkflowState(TypedDict, total=False):
+    source: str
+    source_type: PaperSource
+    progress: int
+    stage: str
+    paper: Paper
+    figures: list[Any]
+    method: Method
+    datasets: list[Dataset]
+    dataset_parse_errors: list[str]
+    software: list[Software]
+    pipeline: Pipeline
+    build_attempts: int
+    max_build_attempts: int
+
+
+def _collect_accessions(text: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _ACC_RE.finditer(text or ""):
+        acc = m.group(1).upper()
+        if acc not in seen:
+            seen.add(acc)
+            out.append(acc)
+    return out
+
+
+def _parse_dataset(accession: str) -> Optional[Dataset]:
+    if accession.startswith(("GSE", "GSM", "GDS", "GPL")):
+        return GEOParser().parse(accession)
+    if accession.startswith(("SRP", "SRX", "SRR", "ERP", "ERR", "PRJNA", "PRJEB")):
+        return SRAParser().parse(accession)
+    return None
+
+
+class WorkflowOrchestrator:
+    """Agentic/stateful orchestrator for parsing + pipeline generation."""
+
+    def __init__(self, *, max_build_attempts: int = 2):
+        self.paper_parser = PaperParser()
+        self.figure_parser = FigureParser()
+        self.methods_parser = MethodsParser()
+        self.software_parser = SoftwareParser()
+        self.pipeline_builder = PipelineBuilder()
+        self.max_build_attempts = max_build_attempts
+
+    def run(self, source: str, source_type: PaperSource) -> WorkflowState:
+        initial: WorkflowState = {
+            "source": source,
+            "source_type": source_type,
+            "progress": 0,
+            "stage": "initialized",
+            "build_attempts": 0,
+            "max_build_attempts": self.max_build_attempts,
+        }
+        if _HAS_LANGGRAPH:
+            graph = self._build_graph()
+            return graph.invoke(initial)
+        return self._run_sequential(initial)
+
+    def _build_graph(self):
+        assert StateGraph is not None
+        graph = StateGraph(WorkflowState)
+        graph.add_node("parse_paper", self._node_parse_paper)
+        graph.add_node("parse_figures", self._node_parse_figures)
+        graph.add_node("parse_methods", self._node_parse_methods)
+        graph.add_node("parse_datasets", self._node_parse_datasets)
+        graph.add_node("parse_software", self._node_parse_software)
+        graph.add_node("build_pipeline", self._node_build_pipeline)
+
+        graph.set_entry_point("parse_paper")
+        graph.add_edge("parse_paper", "parse_figures")
+        graph.add_edge("parse_figures", "parse_methods")
+        graph.add_edge("parse_methods", "parse_datasets")
+        graph.add_edge("parse_datasets", "parse_software")
+        graph.add_edge("parse_software", "build_pipeline")
+        graph.add_conditional_edges(
+            "build_pipeline",
+            self._next_after_build_pipeline,
+            {
+                "build_pipeline": "build_pipeline",
+                "end": END,
+            },
+        )
+        return graph.compile()
+
+    def _run_sequential(self, state: WorkflowState) -> WorkflowState:
+        for fn in (
+            self._node_parse_paper,
+            self._node_parse_figures,
+            self._node_parse_methods,
+            self._node_parse_datasets,
+            self._node_parse_software,
+        ):
+            state.update(fn(state))
+        while True:
+            state.update(self._node_build_pipeline(state))
+            if self._next_after_build_pipeline(state) == "end":
+                break
+        return state
+
+    def _node_parse_paper(self, state: WorkflowState) -> WorkflowState:
+        paper = self.paper_parser.parse(state["source"], source_type=state["source_type"])
+        return {"paper": paper, "progress": 15, "stage": "parsed_paper"}
+
+    def _node_parse_figures(self, state: WorkflowState) -> WorkflowState:
+        figures = self.figure_parser.parse_all_figures(state["paper"])
+        return {"figures": figures, "progress": 35, "stage": "parsed_figures"}
+
+    def _node_parse_methods(self, state: WorkflowState) -> WorkflowState:
+        method = self.methods_parser.parse(
+            state["paper"],
+            figures=state.get("figures", []),
+            computational_only=True,
+        )
+        return {"method": method, "progress": 55, "stage": "parsed_methods"}
+
+    def _node_parse_datasets(self, state: WorkflowState) -> WorkflowState:
+        paper = state["paper"]
+        method = state["method"]
+        figures = state.get("figures", [])
+        section_text = "\n".join((getattr(sec, "text", "") or "") for sec in (paper.sections or []))
+        combined_text = "\n".join(
+            [
+                paper.raw_text or "",
+                section_text,
+                method.data_availability or "",
+                method.code_availability or "",
+                "\n".join(getattr(fig, "caption", "") or "" for fig in figures),
+            ]
+        )
+        accessions = _collect_accessions(combined_text)
+        datasets: list[Dataset] = []
+        dataset_errors: list[str] = []
+        for acc in accessions[:25]:
+            try:
+                ds = _parse_dataset(acc)
+                if ds is not None:
+                    datasets.append(ds)
+            except Exception as exc:  # pragma: no cover - best effort behavior
+                dataset_errors.append(f"{acc}: {type(exc).__name__}: {exc}")
+        return {
+            "datasets": datasets,
+            "dataset_parse_errors": dataset_errors,
+            "progress": 70,
+            "stage": "parsed_datasets",
+        }
+
+    def _node_parse_software(self, state: WorkflowState) -> WorkflowState:
+        software = self.software_parser.parse_from_method(state["method"])
+        return {"software": software, "progress": 80, "stage": "parsed_software"}
+
+    def _node_build_pipeline(self, state: WorkflowState) -> WorkflowState:
+        attempts = int(state.get("build_attempts", 0)) + 1
+        pipeline = self.pipeline_builder.build(
+            state["method"],
+            state.get("datasets", []),
+            state.get("software", []),
+            state.get("figures", []),
+        )
+        passed = bool((pipeline.validation_report or {}).get("passed", True))
+        if passed:
+            return {
+                "pipeline": pipeline,
+                "build_attempts": attempts,
+                "progress": 100,
+                "stage": "completed",
+            }
+        return {
+            "pipeline": pipeline,
+            "build_attempts": attempts,
+            "progress": 92,
+            "stage": "builder_retry",
+        }
+
+    def _next_after_build_pipeline(self, state: WorkflowState) -> str:
+        pipeline = state.get("pipeline")
+        if pipeline is None:
+            return "end"
+        passed = bool((pipeline.validation_report or {}).get("passed", True))
+        if passed:
+            return "end"
+        attempts = int(state.get("build_attempts", 0))
+        max_attempts = int(state.get("max_build_attempts", self.max_build_attempts))
+        if attempts < max_attempts:
+            return "build_pipeline"
+        return "end"
