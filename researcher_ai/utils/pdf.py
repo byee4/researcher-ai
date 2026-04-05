@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import re
+import io
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +64,31 @@ def extract_text_from_pdf(pdf_path: str | Path) -> str:
                 pages_text.append(text)
 
     return "\n".join(pages_text)
+
+
+def extract_markdown_from_pdf_with_marker(pdf_path: str | Path) -> str:
+    """Extract spatially faithful Markdown using marker-pdf when available.
+
+    Falls back to plain text extraction when marker-pdf is unavailable or fails.
+    """
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    # Marker API variants differ by release; keep this path resilient.
+    try:
+        from marker.converters.pdf import PdfConverter  # type: ignore[import]
+        from marker.models import create_model_dict  # type: ignore[import]
+
+        converter = PdfConverter(artifact_dict=create_model_dict())
+        rendered = converter(str(pdf_path))
+        markdown = getattr(rendered, "markdown", None)
+        if isinstance(markdown, str) and markdown.strip():
+            return markdown
+    except Exception as exc:
+        logger.info("marker-pdf Markdown extraction unavailable/failed: %s", exc)
+
+    return extract_text_from_pdf(pdf_path)
 
 
 def extract_pages(pdf_path: str | Path) -> list[dict]:
@@ -156,6 +183,78 @@ def extract_images_from_pdf(
                     )
 
     return saved_paths
+
+
+def extract_figure_panel_images_from_pdf(
+    pdf_path: str | Path,
+    figure_id: str,
+    *,
+    caption: str = "",
+    dpi: int = 180,
+    max_panels: int = 8,
+) -> list[bytes]:
+    """Extract figure panel crops as PNG bytes for multimodal LLM calls.
+
+    Heuristic strategy:
+    1. Find first page whose text mentions the figure id.
+    2. Rasterize page.
+    3. Split into an approximate grid based on panel count inferred from caption.
+    """
+    _require_pdfplumber()
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    fig_num_match = re.search(r"(?i)(?:fig(?:ure)?\.?\s*)(\d+)", figure_id or "")
+    if not fig_num_match:
+        return []
+    fig_num = fig_num_match.group(1)
+    fig_pat = re.compile(rf"(?i)\bfig(?:ure)?\.?\s*{re.escape(fig_num)}[A-Za-z]?\b")
+
+    page_index: Optional[int] = None
+    with pdfplumber.open(pdf_path) as pdf:
+        for idx, page in enumerate(pdf.pages):
+            text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+            if fig_pat.search(text):
+                page_index = idx
+                break
+        if page_index is None:
+            return []
+
+        page = pdf.pages[page_index]
+        pil_img = page.to_image(resolution=dpi).original.convert("RGB")
+
+    panel_count = _estimate_panel_count_from_caption(caption)
+    panel_count = max(1, min(panel_count, max_panels))
+    if panel_count == 1:
+        return [_image_to_png_bytes(pil_img)]
+
+    cols = math.ceil(math.sqrt(panel_count))
+    rows = math.ceil(panel_count / cols)
+    w, h = pil_img.size
+    panel_images: list[bytes] = []
+    for r in range(rows):
+        for c in range(cols):
+            if len(panel_images) >= panel_count:
+                break
+            x0 = int((c / cols) * w)
+            x1 = int(((c + 1) / cols) * w)
+            y0 = int((r / rows) * h)
+            y1 = int(((r + 1) / rows) * h)
+            crop = pil_img.crop((x0, y0, x1, y1))
+            panel_images.append(_image_to_png_bytes(crop))
+    return panel_images
+
+
+def _estimate_panel_count_from_caption(caption: str) -> int:
+    labels = {m.group(1).lower() for m in re.finditer(r"\(([a-h])\)", caption or "", re.IGNORECASE)}
+    return max(1, len(labels))
+
+
+def _image_to_png_bytes(image) -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 # ── Section detection helpers (regex-based, no LLM) ──────────────────────────

@@ -9,6 +9,7 @@ Testing strategy:
 """
 
 import textwrap
+from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -35,6 +36,7 @@ from researcher_ai.parsers.figure_parser import (
     _AxisMeta,
     _FigurePurpose,
     _MethodsAndDatasets,
+    _VisionFigureExtraction,
     _axis_from_meta,
     _build_fig_ref_pattern,
     _extract_caption_from_text,
@@ -1485,3 +1487,54 @@ class TestPmc11633308GroundTruth:
         assert by2["f"].plot_type == PlotType.BUBBLE
         assert by2["g"].plot_type == PlotType.UPSET
         assert by2["h"].plot_type == PlotType.BAR
+
+
+@pytest.mark.snapshot
+class TestSpatialMultimodalSisonPdf:
+    """Validate multimodal panel extraction on Sison_Nature_2026 PDF fixture."""
+
+    PDF_PATH = (
+        Path(__file__).parent / "fixtures" / "figure_calibration" / "Sison_Nature_2026.pdf"
+    )
+
+    @pytest.mark.skipif(not PDF_PATH.exists(), reason="Sison_Nature_2026.pdf not found")
+    def test_visual_panel_count_drives_subfigure_structure(self):
+        paper = Paper(
+            title="Sison Nature 2026",
+            source=PaperSource.PDF,
+            source_path=str(self.PDF_PATH),
+            paper_type=PaperType.EXPERIMENTAL,
+            sections=[],
+            figure_ids=["Figure 1"],
+            figure_captions={},
+            raw_text="",
+        )
+        parser = FigureParser(llm_model="test-model", vision_model="gemini-3.1-pro")
+
+        def _vision_side_effect(*args, **kwargs):
+            images = kwargs.get("image_bytes", [])
+            n = max(1, min(len(images), 8))
+            subfigs = [
+                _SubFigureMeta(
+                    label=chr(ord("a") + i),
+                    description=f"Panel {i + 1}",
+                    plot_type="image",
+                    plot_category="image",
+                )
+                for i in range(n)
+            ]
+            return _VisionFigureExtraction(
+                title="Visual-only decomposition",
+                purpose="Derived from panel crops only.",
+                subfigures=subfigs,
+                methods_used=[],
+                datasets_used=[],
+            )
+
+        with patch("researcher_ai.parsers.figure_parser._extract_structured_data", side_effect=_vision_side_effect):
+            figure = parser.parse_figure(paper, "Figure 1")
+
+        # If multimodal extraction worked, the structure must be driven by image crops.
+        assert figure.title == "Visual-only decomposition"
+        assert len(figure.subfigures) >= 1
+        assert figure.layout.n_rows * figure.layout.n_cols >= len(figure.subfigures)

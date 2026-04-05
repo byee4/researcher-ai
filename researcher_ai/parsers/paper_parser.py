@@ -9,7 +9,8 @@ Parsing strategy (ordered by data richness):
 - If source is a PMID, fetch PubMed XML for metadata, then resolve to PMCID
   for full text. Fall back to LLM parsing of abstract-only if no PMCID exists.
 - If source is a DOI, resolve to PMID, then follow the PMID path.
-- If source is a PDF, extract text with pdfplumber, then use LLM parsing.
+- If source is a PDF, extract spatial Markdown with marker-pdf (table/layout
+  preserving), then use LLM parsing.
 - If source is a URL, fetch HTML text, then use LLM parsing.
 
 LLM parsing is used for:
@@ -40,9 +41,9 @@ from researcher_ai.models.paper import (
     SupplementaryItem,
 )
 from researcher_ai.utils import llm as llm_utils
-from researcher_ai.utils.llm import LLMCache, ask_claude_structured, SYSTEM_PAPER_PARSER
+from researcher_ai.utils.llm import LLMCache, extract_structured_data, SYSTEM_PAPER_PARSER
 from researcher_ai.utils.pdf import (
-    extract_text_from_pdf,
+    extract_markdown_from_pdf_with_marker,
     extract_figure_ids_from_text,
     split_text_into_sections,
 )
@@ -64,9 +65,16 @@ from researcher_ai.utils.pubmed import (
 
 logger = logging.getLogger(__name__)
 
+# Deprecated compatibility alias for legacy tests/mocks.
+ask_claude_structured = extract_structured_data
+
+
+def _extract_structured_data(*args, **kwargs):
+    return ask_claude_structured(*args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
-# Structured extraction schemas (Pydantic, used with ask_claude_structured)
+# Structured extraction schemas (Pydantic, used with extract_structured_data)
 # ---------------------------------------------------------------------------
 
 class _HeaderMeta(BaseModel):
@@ -326,9 +334,9 @@ class PaperParser:
             )
 
     def _parse_from_pdf(self, pdf_path: str) -> Paper:
-        """Extract text from PDF and use LLM to parse."""
+        """Extract spatial Markdown from PDF and use LLM to parse."""
         logger.debug("Parsing PDF: %s", pdf_path)
-        raw_text = extract_text_from_pdf(pdf_path)
+        raw_text = extract_markdown_from_pdf_with_marker(pdf_path)
         return self._parse_raw_text(raw_text, pdf_path, PaperSource.PDF)
 
     def _parse_from_url(self, url: str) -> Paper:
@@ -552,7 +560,7 @@ class PaperParser:
             "DOI (if present), journal name, and publication year."
         )
         try:
-            return ask_claude_structured(
+            return _extract_structured_data(
                 prompt=prompt,
                 output_schema=_HeaderMeta,
                 system=SYSTEM_PAPER_PARSER,
@@ -591,7 +599,7 @@ class PaperParser:
             "Also list any URLs found that point to supplementary materials."
         )
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=prompt,
                 output_schema=_ExtractedSections,
                 system=SYSTEM_PAPER_PARSER,
@@ -643,7 +651,7 @@ class PaperParser:
             f"TEXT:\n{text}"
         )
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=prompt,
                 output_schema=_ExtractedReferences,
                 system=SYSTEM_PAPER_PARSER,
@@ -677,7 +685,7 @@ class PaperParser:
             "clinical, reanalysis. Provide brief reasoning."
         )
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=prompt,
                 output_schema=_PaperTypeClassification,
                 system=SYSTEM_PAPER_PARSER,
@@ -702,7 +710,7 @@ class PaperParser:
             f"TEXT:\n{text[:2000]}"
         )
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=prompt,
                 output_schema=_SupplementaryItems,
                 system=SYSTEM_PAPER_PARSER,

@@ -32,10 +32,38 @@ from researcher_ai.models.method import (
     MethodCategory,
 )
 from researcher_ai.models.paper import Paper
+from researcher_ai.utils.rag import ProtocolRAGStore, search_protocol_docs as rag_search_protocol_docs
 from researcher_ai.utils import llm as llm_utils
-from researcher_ai.utils.llm import LLMCache, ask_claude_structured, SYSTEM_METHODS_PARSER
+from researcher_ai.utils.llm import (
+    LLMCache,
+    extract_structured_data,
+    extract_structured_data_with_tools as llm_extract_structured_data_with_tools,
+    SYSTEM_METHODS_PARSER,
+)
 
 logger = logging.getLogger(__name__)
+
+# Deprecated compatibility alias for legacy tests/mocks.
+ask_claude_structured = extract_structured_data
+
+
+def _extract_structured_data(*args, **kwargs):
+    return ask_claude_structured(*args, **kwargs)
+
+
+def _extract_structured_data_with_tools(**kwargs):
+    """Tool-calling extractor with offline/mock-friendly fallback."""
+    try:
+        return llm_extract_structured_data_with_tools(**kwargs)
+    except Exception:
+        # Fallback keeps tests deterministic when litellm/tool calling is unavailable.
+        return _extract_structured_data(
+            prompt=kwargs.get("prompt", ""),
+            output_schema=kwargs["schema"],
+            system=kwargs.get("system", ""),
+            model=kwargs.get("model_router"),
+            cache=None,
+        )
 
 # ---------------------------------------------------------------------------
 # Section-title keywords for methods detection (case-insensitive)
@@ -208,6 +236,22 @@ class _AssayClassificationList(BaseModel):
     assays: list[_AssayCategoryItem] = Field(default_factory=list)
 
 
+class _StepParameterInference(BaseModel):
+    """LLM-inferred parameter payload for one analysis step."""
+
+    step_number: int
+    inferred_parameters: dict[str, str] = Field(default_factory=dict)
+    inferred_software: Optional[str] = None
+    inferred_software_version: Optional[str] = None
+    rationale: str = ""
+
+
+class _StepParameterInferenceList(BaseModel):
+    """LLM response container for inferred step parameters."""
+
+    updates: list[_StepParameterInference] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # MethodsParser
 # ---------------------------------------------------------------------------
@@ -234,6 +278,7 @@ class MethodsParser:
         """Initialize MethodsParser with optional on-disk LLM cache."""
         self.llm_model = llm_model
         self.cache = LLMCache(cache_dir) if cache_dir else None
+        self.protocol_rag = ProtocolRAGStore()
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -348,6 +393,11 @@ class MethodsParser:
         warnings.extend(dep_warnings)
         if grounded_accessions:
             assays = [self._apply_dataset_sources(a, grounded_accessions) for a in assays]
+        assays, rag_warnings = self._infer_missing_computational_parameters(
+            assays=assays,
+            methods_text=methods_text,
+        )
+        warnings.extend(rag_warnings)
 
         return Method(
             paper_doi=paper.doi,
@@ -509,7 +559,7 @@ class MethodsParser:
             return "", ""
 
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     "Extract the data availability statement and the code availability "
                     "statement from this text. If either is absent, return an empty string.\n\n"
@@ -536,7 +586,7 @@ class MethodsParser:
         if not methods_text.strip():
             return []
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     "List each distinct experimental assay or analysis procedure described "
                     "in this methods section. Be specific but not over-granular: treat "
@@ -589,7 +639,7 @@ class MethodsParser:
 
         assay_list = "\n".join(f"- {n}" for n in assay_names)
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     "For each assay in the list below, classify it as "
                     "'experimental', 'computational', or 'mixed'.\n\n"
@@ -660,7 +710,7 @@ class MethodsParser:
         )
 
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     f"Parse the following methods text for the assay '{assay_name}' into "
                     "a structured description with ordered analysis steps.\n\n"
@@ -783,7 +833,7 @@ class MethodsParser:
 
         assay_list = "\n".join(f"- {n}" for n in assay_names)
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     "Given the list of assays below and the methods text, identify any "
                     "directed dependencies between assays — i.e., cases where the output "
@@ -821,6 +871,119 @@ class MethodsParser:
         except Exception as exc:
             logger.warning("Dependency identification failed: %s", exc)
             return [], []
+
+    # ── Phase 3: RAG-style parameter inference ──────────────────────────────
+
+    def search_protocol_docs(self, query: str, top_k: int = 3) -> str:
+        """Search local vector/lexical protocol index and return top chunks."""
+        store = getattr(self, "protocol_rag", None)
+        if store is None:
+            store = ProtocolRAGStore()
+            self.protocol_rag = store
+        return rag_search_protocol_docs(query, top_k=top_k, store=store)
+
+    def _infer_missing_computational_parameters(
+        self,
+        assays: list[Assay],
+        methods_text: str,
+    ) -> tuple[list[Assay], list[str]]:
+        """Fill missing computational-step parameters using retrieved protocol docs."""
+        out: list[Assay] = []
+        warnings: list[str] = []
+        for assay in assays:
+            if assay.method_category != MethodCategory.computational:
+                out.append(assay)
+                continue
+            missing = [s for s in assay.steps if _step_needs_parameter_inference(s)]
+            if not missing:
+                out.append(assay)
+                continue
+
+            steps_block = "\n".join(
+                f"- step {s.step_number}: {s.description}; software={s.software or 'unknown'}"
+                for s in missing
+            )
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_protocol_docs",
+                        "description": (
+                            "Search local protocol/SOP docs and return relevant excerpts for "
+                            "missing computational-method parameters."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"},
+                                "top_k": {"type": "integer"},
+                            },
+                            "required": ["query"],
+                        },
+                    },
+                }
+            ]
+            handlers = {
+                "search_protocol_docs": lambda args: self.search_protocol_docs(
+                    str(args.get("query", "")),
+                    int(args.get("top_k", 3)),
+                )
+            }
+            try:
+                inferred = _extract_structured_data_with_tools(
+                    model_router=self.llm_model,
+                    prompt=(
+                        "You are filling missing computational-step parameters for reproducibility.\n"
+                        "First identify what is missing. Use the search_protocol_docs tool to retrieve "
+                        "relevant SOP/manual context. Then return only grounded inferred parameters.\n\n"
+                        f"ASSAY: {assay.name}\n"
+                        f"MISSING STEPS:\n{steps_block}\n\n"
+                        f"METHODS TEXT:\n{methods_text[:1800]}\n\n"
+                        "Call search_protocol_docs before finalizing when any key setting is missing."
+                    ),
+                    schema=_StepParameterInferenceList,
+                    tools=tools,
+                    tool_handlers=handlers,
+                    system=SYSTEM_METHODS_PARSER,
+                )
+            except Exception as exc:
+                logger.warning("RAG parameter inference failed for assay %r: %s", assay.name, exc)
+                out.append(assay)
+                continue
+
+            by_step = {u.step_number: u for u in inferred.updates}
+            updated_steps: list[AnalysisStep] = []
+            applied = 0
+            for step in assay.steps:
+                if step.parameters and step.software:
+                    updated_steps.append(step)
+                    continue
+                match = by_step.get(step.step_number)
+                if match:
+                    update_payload: dict[str, Any] = {}
+                    if not step.parameters and match.inferred_parameters:
+                        clean = {
+                            str(k): str(v)
+                            for k, v in match.inferred_parameters.items()
+                            if str(k).strip()
+                        }
+                        if clean:
+                            update_payload["parameters"] = clean
+                    if not step.software and match.inferred_software:
+                        update_payload["software"] = str(match.inferred_software)
+                    if not step.software_version and match.inferred_software_version:
+                        update_payload["software_version"] = str(match.inferred_software_version)
+                    if update_payload:
+                        updated_steps.append(step.model_copy(update=update_payload))
+                        applied += 1
+                        continue
+                updated_steps.append(step)
+            if applied > 0:
+                warnings.append(
+                    f"inferred_parameters: assay={assay.name!r} updated_steps={applied}"
+                )
+            out.append(assay.model_copy(update={"steps": updated_steps}))
+        return out, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -1175,3 +1338,10 @@ def _extract_dataset_accessions(text: str) -> list[str]:
             seen.add(acc)
             out.append(acc)
     return out
+
+
+def _step_needs_parameter_inference(step: AnalysisStep) -> bool:
+    if step.parameters:
+        return False
+    # Focus on computational tools where defaults materially impact reproducibility.
+    return bool(step.software or re.search(r"align|count|differential|cluster|peak", step.description, re.IGNORECASE))

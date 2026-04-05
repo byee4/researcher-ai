@@ -17,6 +17,8 @@ dependencies = [
     "PyYAML",
     "anthropic",
     "openai",
+    "chromadb",
+    "sentence-transformers",
 ]
 
 [project.optional-dependencies]

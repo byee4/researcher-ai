@@ -35,9 +35,16 @@ from pydantic import BaseModel, Field
 from researcher_ai.models.method import AnalysisStep, Method
 from researcher_ai.models.software import Command, Environment, LicenseType, Software
 from researcher_ai.utils import llm as llm_utils
-from researcher_ai.utils.llm import ask_claude_structured, SYSTEM_METHODS_PARSER
+from researcher_ai.utils.llm import extract_structured_data, SYSTEM_METHODS_PARSER
 
 logger = logging.getLogger(__name__)
+
+# Deprecated compatibility alias for legacy tests/mocks.
+ask_claude_structured = extract_structured_data
+
+
+def _extract_structured_data(*args, **kwargs):
+    return ask_claude_structured(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +542,7 @@ class SoftwareParser:
         Returns a list of raw _SoftwareMention objects (not yet enriched).
         """
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     "Extract all software tools, packages, and pipelines mentioned in this "
                     "methods text. For each tool, capture: name, version (if stated), "
@@ -706,7 +713,7 @@ class SoftwareParser:
     ) -> Software:
         """Use LLM to enrich metadata for an unrecognised tool."""
         try:
-            meta = ask_claude_structured(
+            meta = _extract_structured_data(
                 prompt=(
                     f"Provide metadata for the bioinformatics/scientific software tool "
                     f"named '{name}'. Context from the paper: '{context[:500]}'\n\n"
@@ -845,7 +852,7 @@ class SoftwareParser:
 
         # LLM fallback — narrow schema avoids required-field validation failures
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     f"Is '{software.name}' open-source, closed-source, freemium, or unknown? "
                     f"Context: {software.description}. "
@@ -886,7 +893,7 @@ class SoftwareParser:
             return entry["alternative"]
 
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     f"'{software.name}' is closed-source bioinformatics software. "
                     f"Description: {software.description}. "
@@ -952,7 +959,7 @@ class SoftwareParser:
         # Only invoke if there is meaningful context and no structured command yet.
         if not commands and context.strip():
             try:
-                result = ask_claude_structured(
+                result = _extract_structured_data(
                     prompt=(
                         f"Extract the CLI command or function call for '{software_name}' "
                         f"described in this text. Include flag names and values as given.\n\n"
