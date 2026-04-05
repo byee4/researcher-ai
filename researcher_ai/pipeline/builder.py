@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import textwrap
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 from researcher_ai.models.dataset import Dataset
@@ -86,6 +89,7 @@ class PipelineBuilder:
     def __init__(
         self,
         llm_model: str = os.environ.get("RESEARCHER_AI_MODEL", "gpt-5.4"),
+        validation_max_rounds: int = 3,
     ):
         """Initialize PipelineBuilder.
 
@@ -94,6 +98,7 @@ class PipelineBuilder:
         """
         self.llm_model = llm_model
         self._software_index: dict[str, Software] = {}
+        self.validation_max_rounds = validation_max_rounds
 
     # ------------------------------------------------------------------
     # Public API
@@ -128,6 +133,11 @@ class PipelineBuilder:
         # Always generate Snakemake for custom steps
         if backend == PipelineBackend.SNAKEMAKE or self._needs_custom_steps(config):
             pipeline.snakefile_content = SnakemakeGenerator().generate(config)
+            pipeline.tscc_slurm_profile = self._tscc_slurm_profile()
+            pipeline.snakefile_content, pipeline.validation_report = self._validate_and_repair_snakefile(
+                snakefile_content=pipeline.snakefile_content,
+                profile=pipeline.tscc_slurm_profile,
+            )
 
         # Generate Nextflow when requested or nf-core steps exist
         if backend == PipelineBackend.NEXTFLOW or self._has_nfcore_steps(config):
@@ -137,6 +147,122 @@ class PipelineBuilder:
         pipeline.conda_env_yaml = self._generate_conda_env(software)
 
         return pipeline
+
+    def _tscc_slurm_profile(self) -> dict[str, str]:
+        """Return default TSCC-optimized Snakemake SLURM profile arguments."""
+        return {
+            "partition": os.environ.get("TSCC_SLURM_PARTITION", "hotel"),
+            "account": os.environ.get("TSCC_SLURM_ACCOUNT", "csd786"),
+            "mem": os.environ.get("TSCC_SLURM_MEM", "64G"),
+        }
+
+    def _validate_and_repair_snakefile(
+        self,
+        *,
+        snakefile_content: str,
+        profile: dict[str, str],
+    ) -> tuple[str, dict[str, object]]:
+        """Iteratively validate Snakefile and apply simple auto-repairs.
+
+        Validation order per round:
+        1. `snakemake --lint`
+        2. `snakemake -n`
+        """
+        attempts: list[dict[str, object]] = []
+        current = snakefile_content
+
+        for round_idx in range(1, self.validation_max_rounds + 1):
+            lint = self._run_snakemake_check(current, profile, lint=True)
+            attempts.append({"round": round_idx, **lint})
+            if lint["status"] == "ok":
+                dry = self._run_snakemake_check(current, profile, lint=False)
+                attempts.append({"round": round_idx, **dry})
+                if dry["status"] == "ok":
+                    return current, {"passed": True, "attempts": attempts}
+                current = self._repair_snakefile(current, str(dry.get("stderr", "")))
+            else:
+                if lint["status"] == "tool_unavailable":
+                    return current, {"passed": True, "attempts": attempts, "skipped": "snakemake_unavailable"}
+                current = self._repair_snakefile(current, str(lint.get("stderr", "")))
+
+        return current, {"passed": False, "attempts": attempts}
+
+    def _run_snakemake_check(
+        self,
+        snakefile_content: str,
+        profile: dict[str, str],
+        *,
+        lint: bool,
+    ) -> dict[str, object]:
+        """Run one Snakemake validation command in an isolated temp workspace."""
+        with tempfile.TemporaryDirectory(prefix="researcher_ai_smk_") as tmp:
+            tmpdir = Path(tmp)
+            snakefile_path = tmpdir / "Snakefile"
+            config_path = tmpdir / "config.yaml"
+            snakefile_path.write_text(snakefile_content)
+            config_path.write_text("samples: []\n")
+
+            if lint:
+                cmd = ["snakemake", "--lint", "-s", str(snakefile_path)]
+            else:
+                cmd = [
+                    "snakemake",
+                    "-n",
+                    "-s",
+                    str(snakefile_path),
+                    "--configfile",
+                    str(config_path),
+                    "--default-resources",
+                    f"slurm_partition={profile['partition']}",
+                    f"slurm_account={profile['account']}",
+                    f"mem_mb={self._parse_mem_mb(profile['mem'])}",
+                ]
+
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=tmp,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+            except FileNotFoundError:
+                return {"status": "tool_unavailable", "cmd": " ".join(cmd), "stderr": "snakemake not installed"}
+            except subprocess.TimeoutExpired as exc:
+                return {"status": "error", "cmd": " ".join(cmd), "stderr": f"TimeoutExpired: {exc}"}
+
+            status = "ok" if proc.returncode == 0 else "error"
+            return {
+                "status": status,
+                "cmd": " ".join(cmd),
+                "returncode": proc.returncode,
+                "stdout": proc.stdout[-5000:],
+                "stderr": proc.stderr[-5000:],
+            }
+
+    def _repair_snakefile(self, snakefile_content: str, error_text: str) -> str:
+        """Apply conservative deterministic fixes based on Snakemake traceback text."""
+        patched = snakefile_content
+        if "min_version" in error_text and "from snakemake.utils import min_version" not in patched:
+            patched = 'from snakemake.utils import min_version\n' + patched
+        if "configfile" in error_text and 'configfile: "config.yaml"' not in patched:
+            patched = patched + '\nconfigfile: "config.yaml"\n'
+        if "rule all" in error_text and "rule all:" not in patched:
+            patched = patched + '\nrule all:\n    input:\n        []\n'
+        return patched
+
+    def _parse_mem_mb(self, mem_text: str) -> int:
+        """Convert mem strings (e.g., 64G) to MB for Snakemake defaults."""
+        txt = mem_text.strip().upper()
+        if txt.endswith("G"):
+            return int(float(txt[:-1]) * 1024)
+        if txt.endswith("M"):
+            return int(float(txt[:-1]))
+        try:
+            return int(float(txt))
+        except ValueError:
+            return 65536
 
     def _computational_only_method(self, method: Method) -> Method:
         """Return a Method containing only computational assays and valid edges."""

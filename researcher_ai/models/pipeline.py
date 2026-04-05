@@ -113,3 +113,11 @@ class Pipeline(BaseModel):
     jupyter_content: Optional[str] = None  # JSON string of .ipynb
     conda_env_yaml: Optional[str] = None
     dockerfile: Optional[str] = None
+    validation_report: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Engineering-agent validation metadata from iterative Snakefile checks.",
+    )
+    tscc_slurm_profile: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Injected TSCC SLURM profile defaults used for Snakemake execution.",
+    )
