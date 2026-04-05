@@ -2,16 +2,11 @@
 
 Strategy (per figure):
 
-- Locate the caption: check ``paper.figure_captions`` (JATS) first, then scan
-  section text with a regex pattern.
-- Collect in-text references: sentences across all sections that mention the
-  figure ID or its sub-panel labels.
-- Use LLM to decompose the caption into sub-panels (``SubFigure`` objects).
-- Use LLM to write a one-paragraph purpose for the figure.
-- Extract dataset accessions (GSE, SRP, SRR, PRIDE, MASS) via regex,
-  supplemented by LLM for accessions embedded in prose.
-- Extract method/assay names from caption plus context via LLM.
-- Infer ``PanelLayout`` from the number and labels of subfigures.
+- PDF source: multimodal-first flow that crops panel images from the PDF and
+  sends raw image bytes + caption/context to a vision-capable model, then
+  instantiates ``Figure``/``SubFigure`` directly from structured output.
+- Non-PDF source: caption/context-assisted structured extraction path with
+  text/BioC helpers retained for backwards compatibility.
 """
 
 from __future__ import annotations
@@ -20,6 +15,7 @@ import json
 import logging
 import math
 import re
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -40,19 +36,30 @@ from researcher_ai.models.figure import (
     StatisticalAnnotation,
     SubFigure,
 )
-from researcher_ai.models.paper import Paper
+from researcher_ai.models.paper import Paper, PaperSource
 from researcher_ai.models.paper import BioCPassageContext
 from researcher_ai.parsers.figure_calibration import FigureCalibrationEngine
 from researcher_ai.utils import llm as llm_utils
-from researcher_ai.utils.llm import LLMCache, ask_claude_structured, SYSTEM_FIGURE_PARSER
-from researcher_ai.utils.pdf import extract_figure_ids_from_text
+from researcher_ai.utils.llm import (
+    LLMCache,
+    extract_structured_data,
+    SYSTEM_FIGURE_PARSER,
+)
+from researcher_ai.utils.pdf import extract_figure_ids_from_text, extract_figure_panel_images_from_pdf
 from researcher_ai.utils.pubmed import get_figure_urls_from_pmid, get_figure_urls_from_pmcid
 
 logger = logging.getLogger(__name__)
 
+# Deprecated compatibility alias for legacy tests/mocks.
+ask_claude_structured = extract_structured_data
+
+
+def _extract_structured_data(*args, **kwargs):
+    return ask_claude_structured(*args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
-# Structured extraction schemas (Pydantic, used with ask_claude_structured)
+# Structured extraction schemas (Pydantic, used with extract_structured_data)
 # ---------------------------------------------------------------------------
 
 class _AxisMeta(BaseModel):
@@ -171,6 +178,16 @@ class _MethodsAndDatasets(BaseModel):
         default_factory=list,
         description="Dataset identifiers mentioned (e.g., 'GSE72987', 'SRP123456')"
     )
+
+
+class _VisionFigureExtraction(BaseModel):
+    """Multimodal extraction payload used for PDF figure parsing."""
+
+    title: str = ""
+    purpose: str = ""
+    subfigures: list[_SubFigureMeta] = Field(default_factory=list)
+    methods_used: list[str] = Field(default_factory=list)
+    datasets_used: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -298,9 +315,11 @@ class FigureParser:
         self,
         llm_model: str = llm_utils.DEFAULT_MODEL,
         cache_dir: Optional[str] = None,
+        vision_model: str = "gemini-3.1-pro",
     ):
         """Initialize FigureParser with model and optional structured-response cache."""
         self.llm_model = llm_model
+        self.vision_model = vision_model
         self.cache = LLMCache(cache_dir) if cache_dir else None
         self.calibration_engine = FigureCalibrationEngine()
 
@@ -335,16 +354,49 @@ class FigureParser:
         ]
         preview_map = self._resolve_preview_urls(paper, figure_ids)
 
-        paper_level_datasets = self._extract_dataset_ids_from_paper(paper)
-        paper_level_methods = self._extract_methods_from_paper(paper)
+        if paper.source == PaperSource.PDF:
+            paper_level_datasets = []
+            paper_level_methods = []
+        else:
+            paper_level_datasets = self._extract_dataset_ids_from_paper(paper)
+            paper_level_methods = self._extract_methods_from_paper(paper)
 
         for fig_id in figure_ids:
             logger.info("Parsing %s", fig_id)
-            # Collect caption and in-text context once here so they can be
-            # (a) passed directly into the LLM pipeline, avoiding a second scan,
-            # (b) preserved in the stub if LLM calls later fail.
-            caption = self._find_caption(paper, fig_id)
-            in_text = self._find_in_text_references(paper, fig_id)
+            if paper.source == PaperSource.PDF:
+                # PDF path is multimodal-first: avoid legacy text-regex routing.
+                caption, in_text = self._pdf_figure_context(paper, fig_id)
+            else:
+                caption = self._find_caption(paper, fig_id)
+                in_text = self._find_in_text_references(paper, fig_id)
+            multimodal_figure = self._parse_figure_with_multimodal_pdf(
+                paper=paper,
+                figure_id=fig_id,
+                caption=caption,
+                in_text=in_text,
+            )
+            if multimodal_figure is not None:
+                multimodal_figure = self._apply_paper_specific_overrides(paper, multimodal_figure)
+                multimodal_figure = multimodal_figure.model_copy(update={
+                    "datasets_used": _merge_ordered_unique(
+                        multimodal_figure.datasets_used, paper_level_datasets
+                    ),
+                    "methods_used": _merge_ordered_unique(
+                        multimodal_figure.methods_used, paper_level_methods
+                    ),
+                    "preview_url": preview_map.get(fig_id),
+                })
+                figures.append(multimodal_figure)
+                continue
+            if paper.source == PaperSource.PDF:
+                stub = self._stub_figure(fig_id, caption=caption, in_text=in_text)
+                stub = stub.model_copy(update={
+                    "datasets_used": paper_level_datasets,
+                    "methods_used": paper_level_methods,
+                    "preview_url": preview_map.get(fig_id),
+                })
+                figures.append(stub)
+                continue
             bioc_fig_passages, bioc_results_passages = self._get_bioc_context_for_figure(
                 paper,
                 fig_id,
@@ -417,8 +469,38 @@ class FigureParser:
         Returns:
             Populated Figure object.
         """
-        caption = self._find_caption(paper, figure_id)
-        in_text = self._find_in_text_references(paper, figure_id)
+        if paper.source == PaperSource.PDF:
+            caption, in_text = self._pdf_figure_context(paper, figure_id)
+        else:
+            caption = self._find_caption(paper, figure_id)
+            in_text = self._find_in_text_references(paper, figure_id)
+        multimodal_figure = self._parse_figure_with_multimodal_pdf(
+            paper=paper,
+            figure_id=figure_id,
+            caption=caption,
+            in_text=in_text,
+        )
+        if multimodal_figure is not None:
+            figure = self._apply_paper_specific_overrides(paper, multimodal_figure)
+            preview_map = self._resolve_preview_urls(paper, [figure_id])
+            if paper.source == PaperSource.PDF:
+                paper_level_datasets = []
+                paper_level_methods = []
+            else:
+                paper_level_datasets = self._extract_dataset_ids_from_paper(paper)
+                paper_level_methods = self._extract_methods_from_paper(paper)
+            return figure.model_copy(update={
+                "datasets_used": _merge_ordered_unique(
+                    figure.datasets_used, paper_level_datasets
+                ),
+                "methods_used": _merge_ordered_unique(
+                    figure.methods_used, paper_level_methods
+                ),
+                "preview_url": preview_map.get(figure_id),
+            })
+        if paper.source == PaperSource.PDF:
+            return self._stub_figure(figure_id, caption=caption, in_text=in_text)
+
         bioc_fig_passages, bioc_results_passages = self._get_bioc_context_for_figure(
             paper,
             figure_id,
@@ -445,6 +527,76 @@ class FigureParser:
             "preview_url": preview_map.get(figure_id),
         })
         return figure
+
+    def _pdf_figure_context(self, paper: Paper, figure_id: str) -> tuple[str, list[str]]:
+        """Return lightweight caption/context for PDF multimodal parsing only."""
+        if paper.figure_captions:
+            for key, caption in paper.figure_captions.items():
+                if _fig_ids_match(key, figure_id):
+                    return caption, []
+        return "", []
+
+    def _parse_figure_with_multimodal_pdf(
+        self,
+        *,
+        paper: Paper,
+        figure_id: str,
+        caption: str,
+        in_text: list[str],
+    ) -> Optional[Figure]:
+        """Parse figure directly from PDF panel crops and caption context."""
+        if paper.source != PaperSource.PDF:
+            return None
+        pdf_path = Path(paper.source_path)
+        if not pdf_path.exists() or not pdf_path.is_file():
+            return None
+
+        panel_images = extract_figure_panel_images_from_pdf(
+            pdf_path,
+            figure_id=figure_id,
+            caption=caption,
+        )
+        if not panel_images:
+            return None
+
+        prompt = (
+            f"Analyse scientific figure {figure_id} from the provided panel images.\n\n"
+            f"CAPTION:\n{caption or '(not found)'}\n\n"
+            f"IN-TEXT REFERENCES:\n{chr(10).join(in_text[:10]) or '(none)'}\n\n"
+            "Instantiate complete figure metadata with robust panel-level "
+            "SubFigure objects."
+        )
+        try:
+            extracted = _extract_structured_data(
+                model_router=self.vision_model,
+                prompt=prompt,
+                schema=_VisionFigureExtraction,
+                system=SYSTEM_FIGURE_PARSER,
+                cache=self.cache,
+                image_bytes=panel_images,
+            )
+        except Exception as exc:
+            logger.warning("Multimodal PDF figure extraction failed for %s: %s", figure_id, exc)
+            return None
+
+        subfigures = [_subfigure_from_meta(m) for m in extracted.subfigures]
+        if not subfigures and caption.strip():
+            subfigures = _fallback_subfigures_from_caption(caption)
+        layout = self._infer_layout(subfigures)
+        subfigures = _assign_subfigure_boundary_boxes(subfigures, layout)
+        title = _resolve_figure_title(figure_id, extracted.title, caption)
+        purpose = extracted.purpose or _fallback_purpose_from_caption(caption, in_text, figure_id)
+        return Figure(
+            figure_id=figure_id,
+            title=title,
+            caption=caption,
+            purpose=purpose,
+            subfigures=subfigures,
+            layout=layout,
+            in_text_context=in_text,
+            datasets_used=[d for d in extracted.datasets_used if isinstance(d, str) and d.strip()],
+            methods_used=[m for m in extracted.methods_used if isinstance(m, str) and m.strip()],
+        )
 
     def _resolve_preview_urls(self, paper: Paper, figure_ids: list[str]) -> dict[str, str]:
         """Map canonical main figure IDs (Figure 1, Figure 2, ...) to preview URLs."""
@@ -681,7 +833,7 @@ class FigureParser:
             "entry with label='main'."
         )
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=prompt,
                 output_schema=_SubFigureList,
                 system=SYSTEM_FIGURE_PARSER,
@@ -707,7 +859,7 @@ class FigureParser:
             f"IN-TEXT CONTEXT:\n{context_snippet or '(none)'}"
         )
         try:
-            return ask_claude_structured(
+            return _extract_structured_data(
                 prompt=prompt,
                 output_schema=_FigurePurpose,
                 system=SYSTEM_FIGURE_PARSER,
@@ -751,7 +903,7 @@ class FigureParser:
         if not combined.strip():
             return accessions  # already empty
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     "Extract any dataset or repository accession identifiers from this text. "
                     "Include GEO (GSE/GSM), SRA (SRP/SRR/SRX), PRIDE (PXD), "
@@ -793,7 +945,7 @@ class FigureParser:
         if not combined:
             return []
         try:
-            result = ask_claude_structured(
+            result = _extract_structured_data(
                 prompt=(
                     "List the distinct assay or experimental method names referenced "
                     "in this figure caption and context text. Include sequencing assays "

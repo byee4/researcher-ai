@@ -2,9 +2,9 @@
 
 Design principles:
 
-- ``ask_claude()``: fire-and-forget text to text.
-- ``ask_claude_structured()``: uses tool use to guarantee JSON output matching
-  a Pydantic model schema, so no post-hoc string parsing is required.
+- ``generate_text()``: provider-agnostic text generation.
+- ``extract_structured_data()``: universal structured extraction interface for
+  OpenAI, Anthropic, and Gemini via ``litellm``.
 - ``LLMCache``: thin file-based cache to avoid re-running identical prompts
   during development and testing.
 
@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import base64
 from pathlib import Path
 from typing import Any, Literal, Optional, TypeVar
 
@@ -111,6 +112,57 @@ def _strip_json_fences(text: str) -> str:
     return cleaned.strip()
 
 
+def _extract_message_text(response: Any) -> str:
+    """Extract assistant text content from either OpenAI or LiteLLM responses."""
+    try:
+        content = response.choices[0].message.content
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError(f"Unexpected response shape: {type(response).__name__}") from exc
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+                elif "text" in item:
+                    parts.append(str(item.get("text", "")))
+            elif hasattr(item, "text"):
+                parts.append(str(getattr(item, "text", "")))
+        return "".join(parts)
+    return str(content or "")
+
+
+def _infer_provider_from_model_router(model_router: str) -> Literal["anthropic", "openai", "gemini"]:
+    """Infer provider family from model-router string."""
+    m = (model_router or "").strip().lower()
+    if m.startswith("claude") or m.startswith("anthropic/"):
+        return "anthropic"
+    if m.startswith("gemini") or m.startswith("google/") or m.startswith("vertex_ai/"):
+        return "gemini"
+    return "openai"
+
+
+def _resolve_api_key_for_model_router(model_router: str) -> str:
+    """Resolve API key env var by model router/provider."""
+    provider = _infer_provider_from_model_router(model_router)
+    key_env_map = {
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+    }
+    key_name = key_env_map[provider]
+    key = os.environ.get(key_name) or os.environ.get("LLM_API_KEY")
+    if key:
+        return key
+    raise EnvironmentError(
+        f"No API key found for model '{model_router}'. "
+        f"Set {key_name} (or LLM_API_KEY fallback)."
+    )
+
+
 def _openai_chat_create(
     *,
     client: Any,
@@ -143,66 +195,46 @@ def _openai_chat_create(
 # Simple text → text
 # ---------------------------------------------------------------------------
 
-def ask_claude(
+def generate_text(
+    model_router: str,
     prompt: str,
+    *,
     system: str = "",
-    model: str = DEFAULT_MODEL,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = 0.0,
     cache: Optional["LLMCache"] = None,
 ) -> str:
-    """Send a prompt to the selected model provider and return text.
+    """Universal text-generation interface via LiteLLM."""
+    try:
+        from litellm import completion  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError(
+            "litellm is required for generate_text(). "
+            "Install with: pip install litellm"
+        ) from exc
 
-    Args:
-        prompt: User-turn message.
-        system: System prompt (e.g., role description).
-        model: Model identifier string.
-        max_tokens: Maximum response tokens.
-        temperature: Sampling temperature (0 = deterministic).
-        cache: Optional LLMCache instance; if provided, results are cached
-               on disk and returned from cache on subsequent identical calls.
-
-    Returns:
-        Response text string.
-    """
     if cache is not None:
-        cached = cache.get(prompt, system, model)
+        cached = cache.get(prompt, system, model_router)
         if cached is not None:
-            logger.debug("LLM cache hit")
+            logger.debug("LLM text cache hit")
             return cached
 
-    provider = _infer_provider(model)
-    client = _get_client(provider)
-    if provider == "anthropic":
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if system:
-            kwargs["system"] = system
-        if temperature != 0.0:
-            kwargs["temperature"] = temperature
+    api_key = _resolve_api_key_for_model_router(model_router)
+    messages: list[dict[str, Any]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
 
-        response = client.messages.create(**kwargs)
-        text = response.content[0].text
-    else:
-        messages: list[dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        response = _openai_chat_create(
-            client=client,
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        text = _extract_openai_text(response)
-
+    response = completion(
+        model=model_router,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        api_key=api_key,
+    )
+    text = _extract_message_text(response)
     if cache is not None:
-        cache.set(prompt, system, model, text)
-
+        cache.set(prompt, system, model_router, text)
     return text
 
 
@@ -210,146 +242,110 @@ def ask_claude(
 # Structured extraction via tool_use
 # ---------------------------------------------------------------------------
 
-def ask_claude_structured(
-    prompt: str,
-    output_schema: type[T],
+def extract_structured_data(
+    model_router: Optional[str] = None,
+    prompt: str = "",
+    schema: Optional[type[T]] = None,
+    *,
     system: str = "",
-    model: str = DEFAULT_MODEL,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = 0.0,
     cache: Optional["LLMCache"] = None,
+    image_bytes: Optional[list[bytes]] = None,
+    **legacy_kwargs: Any,
 ) -> T:
-    """Extract structured data from text using provider-native JSON features.
+    """Universal structured extraction interface via LiteLLM.
 
-    Uses the tool_use feature to guarantee that Claude returns JSON
-    conforming to the Pydantic model's schema — no regex parsing required.
-
-    :param prompt: User-turn message describing what to extract.
-    :param output_schema: Pydantic model class used as the target schema.
-    :param system: Optional system prompt.
-    :param model: Model identifier.
-    :param max_tokens: Maximum response tokens.
-    :param cache: Optional on-disk LLM cache.
-    :return: Parsed instance of ``output_schema``.
-
-    Example::
-
-        class HeaderMeta(BaseModel):
-            title: str
-            authors: list[str]
-            doi: Optional[str] = None
-
-        meta = ask_claude_structured(
-            prompt=f"Extract from: {paper_text[:2000]}",
-            output_schema=HeaderMeta,
-            system="You are a scientific paper parser.",
-        )
+    Args:
+        model_router: Target model/router string, e.g. "gpt-5.4",
+            "claude-3-7-sonnet", "gemini-3.1-pro".
+        prompt: User prompt.
+        schema: Pydantic model class to validate structured output.
+        system: Optional system prompt.
+        max_tokens: Max output tokens.
+        temperature: Sampling temperature.
+        cache: Optional LLM cache.
+        image_bytes: Optional list of raw image bytes for multimodal calls.
     """
-    schema = output_schema.model_json_schema()
-    tool_name = "extract_data"
+    try:
+        from litellm import completion  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError(
+            "litellm is required for extract_structured_data(). "
+            "Install with: pip install litellm"
+        ) from exc
 
-    cache_key_extra = json.dumps(schema, sort_keys=True)
+    # Backward-compatible kwargs support for migrated call-sites.
+    if schema is None:
+        schema = legacy_kwargs.pop("output_schema", None)
+    if model_router is None:
+        model_router = legacy_kwargs.pop("model", None)
+    if schema is None:
+        raise ValueError("extract_structured_data requires a Pydantic schema.")
+    if not model_router:
+        raise ValueError("extract_structured_data requires model_router.")
+
+    json_schema = schema.model_json_schema()
+    image_bytes = image_bytes or []
+    image_hash = hashlib.sha256(b"".join(image_bytes)).hexdigest()[:16] if image_bytes else ""
+    cache_key_extra = json.dumps(json_schema, sort_keys=True) + image_hash
     if cache is not None:
-        cached_text = cache.get(prompt, system + cache_key_extra, model)
+        cached_text = cache.get(prompt, system + cache_key_extra, model_router)
         if cached_text is not None:
             logger.debug("LLM structured cache hit")
-            return output_schema.model_validate_json(cached_text)
+            return schema.model_validate_json(cached_text)
 
-    provider = _infer_provider(model)
-    client = _get_client(provider)
-    if provider == "anthropic":
-        tools = [
-            {
-                "name": tool_name,
-                "description": (
-                    f"Extract structured information and return it as JSON "
-                    f"conforming to the schema. Schema: {schema.get('description', schema['title'] if 'title' in schema else 'output')}"
-                ),
-                "input_schema": schema,
-            }
-        ]
+    api_key = _resolve_api_key_for_model_router(model_router)
 
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "tools": tools,
-            "tool_choice": {"type": "tool", "name": tool_name},
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if system:
-            kwargs["system"] = system
-
-        response = client.messages.create(**kwargs)
-
-        # Find the tool_use block
-        tool_block = next(
-            (b for b in response.content if b.type == "tool_use" and b.name == tool_name),
-            None,
-        )
-        if tool_block is None:
-            raise ValueError(
-                f"Claude did not return a tool_use block with name '{tool_name}'. "
-                f"Response: {response.content}"
-            )
-
-        result = output_schema.model_validate(tool_block.input)
-    else:
-        messages: list[dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        schema_name = (
-            schema.get("title", output_schema.__name__) if isinstance(schema, dict) else output_schema.__name__
-        )
-        try:
-            response = _openai_chat_create(
-                client=client,
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=0.0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": str(schema_name).replace(" ", "_")[:64],
-                        "schema": schema,
-                        # Some OpenAI models reject strict=true unless every
-                        # object node has explicit additionalProperties=false.
-                        # Keep schema mode, but relax strictness for compatibility.
-                        "strict": False,
-                    },
-                },
-            )
-            text = _strip_json_fences(_extract_openai_text(response))
-            result = output_schema.model_validate_json(text)
-        except Exception as exc:
-            logger.warning(
-                "OpenAI json_schema structured output failed (%s). "
-                "Retrying with json_object response format.",
-                exc,
-            )
-            fallback_messages = list(messages)
-            fallback_messages.append(
+    user_content: Any
+    if image_bytes:
+        multimodal_parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for img in image_bytes:
+            b64 = base64.b64encode(img).decode("ascii")
+            multimodal_parts.append(
                 {
-                    "role": "user",
-                    "content": (
-                        "Return the result as a valid JSON object that conforms to the schema. "
-                        "Do not include markdown fences."
-                    ),
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}"},
                 }
             )
-            response = _openai_chat_create(
-                client=client,
-                model=model,
-                messages=fallback_messages,
-                max_tokens=max_tokens,
-                temperature=0.0,
-                response_format={"type": "json_object"},
-            )
-            text = _strip_json_fences(_extract_openai_text(response))
-            result = output_schema.model_validate_json(text)
+        user_content = multimodal_parts
+    else:
+        user_content = prompt
+
+    messages: list[dict[str, Any]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user_content})
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Return ONLY valid JSON matching this schema exactly:\n"
+                f"{json.dumps(json_schema, ensure_ascii=False)}"
+            ),
+        }
+    )
+
+    kwargs: dict[str, Any] = {
+        "model": model_router,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "api_key": api_key,
+    }
+    try:
+        response = completion(
+            **kwargs,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        response = completion(**kwargs)
+
+    text = _strip_json_fences(_extract_message_text(response))
+    result = schema.model_validate_json(text)
 
     if cache is not None:
-        cache.set(prompt, system + cache_key_extra, model, result.model_dump_json())
+        cache.set(prompt, system + cache_key_extra, model_router, result.model_dump_json())
 
     return result
 
@@ -358,18 +354,14 @@ def ask_claude_structured(
 # Batch helper (multiple independent extractions in one call)
 # ---------------------------------------------------------------------------
 
-def ask_claude_batch(
+def generate_text_batch(
     prompts: list[str],
     system: str = "",
-    model: str = DEFAULT_MODEL,
+    model_router: str = DEFAULT_MODEL,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> list[str]:
-    """Run multiple independent prompts sequentially.
-
-    Convenience wrapper — does not use the Batch API. For large batches
-    (>100 items) prefer the Anthropic Batch API directly.
-    """
-    return [ask_claude(p, system=system, model=model, max_tokens=max_tokens)
+    """Run multiple independent generation prompts sequentially."""
+    return [generate_text(prompt=p, system=system, model_router=model_router, max_tokens=max_tokens)
             for p in prompts]
 
 
@@ -385,7 +377,7 @@ class LLMCache:
 
     Usage:
         cache = LLMCache("/path/to/cache/dir")
-        result = ask_claude("...", cache=cache)
+        result = generate_text("gpt-5.4", "...", cache=cache)
     """
 
     def __init__(self, cache_dir: str | Path):

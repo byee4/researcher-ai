@@ -43,6 +43,8 @@ from researcher_ai.parsers.methods_parser import (
     _AvailabilityStatement,
     _DependencyList,
     _DependencyMeta,
+    _StepParameterInference,
+    _StepParameterInferenceList,
     _StepMeta,
     _assay_from_meta,
     _build_figure_context,
@@ -955,6 +957,81 @@ class TestParse:
         assert "BioC-only methods text" in method.raw_methods_text
         assert method.assay_graph is not None
         assert method.assay_graph.assays == []
+
+    def test_search_protocol_docs_returns_relevant_hit(self):
+        parser = _make_parser()
+        docs = parser.search_protocol_docs("STAR alignment runThreadN genomeDir", top_k=2)
+        assert len(docs) >= 1
+        assert any("STAR" in d["title"] for d in docs)
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_parse_infers_missing_parameters_for_computational_steps(self, mock_llm):
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayList:
+                return _AssayList(assay_names=["Read alignment"])
+            if output_schema is _AssayClassificationList:
+                return _AssayClassificationList(
+                    assays=[_AssayCategoryItem(name="Read alignment", method_category="computational")]
+                )
+            if output_schema is _AssayMeta:
+                return _make_assay_meta(
+                    name="Read alignment",
+                    steps=[_make_step_meta(1, description="Align with STAR", software="STAR", parameters={})],
+                )
+            if output_schema is _StepParameterInferenceList:
+                return _StepParameterInferenceList(
+                    updates=[
+                        _StepParameterInference(
+                            step_number=1,
+                            inferred_parameters={"runThreadN": "8", "genomeDir": "/ref/hg38"},
+                            rationale="STAR protocol defaults",
+                        )
+                    ]
+                )
+            if output_schema is _DependencyList:
+                return _DependencyList(dependencies=[])
+            if output_schema is _AvailabilityStatement:
+                return _AvailabilityStatement(data_statement="", code_statement="")
+            return MagicMock()
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+        method = parser.parse(SAMPLE_PAPER, computational_only=True)
+        assert method.assays
+        step = method.assays[0].steps[0]
+        assert step.parameters.get("runThreadN") == "8"
+        assert step.parameters.get("genomeDir") == "/ref/hg38"
+        assert any("inferred_parameters" in w for w in method.parse_warnings)
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_parse_does_not_overwrite_existing_parameters(self, mock_llm):
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayList:
+                return _AssayList(assay_names=["Read alignment"])
+            if output_schema is _AssayClassificationList:
+                return _AssayClassificationList(
+                    assays=[_AssayCategoryItem(name="Read alignment", method_category="computational")]
+                )
+            if output_schema is _AssayMeta:
+                return _make_assay_meta(
+                    name="Read alignment",
+                    steps=[_make_step_meta(1, description="Align with STAR", software="STAR", parameters={"outSAMtype": "BAM"})],
+                )
+            if output_schema is _StepParameterInferenceList:
+                return _StepParameterInferenceList(
+                    updates=[_StepParameterInference(step_number=1, inferred_parameters={"runThreadN": "8"})]
+                )
+            if output_schema is _DependencyList:
+                return _DependencyList(dependencies=[])
+            if output_schema is _AvailabilityStatement:
+                return _AvailabilityStatement(data_statement="", code_statement="")
+            return MagicMock()
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+        method = parser.parse(SAMPLE_PAPER, computational_only=True)
+        step = method.assays[0].steps[0]
+        assert step.parameters == {"outSAMtype": "BAM"}
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_json_roundtrip(self, mock_llm):
