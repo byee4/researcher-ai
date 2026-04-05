@@ -63,11 +63,23 @@ def _extract_structured_data(*args, **kwargs):
 # ---------------------------------------------------------------------------
 
 class _AxisMeta(BaseModel):
-    label: str = ""
-    scale: str = "linear"
-    units: Optional[str] = None
-    data_type: Optional[str] = None
-    is_inverted: bool = False
+    label: str = Field(default="", description="Axis label text as shown in the panel.")
+    scale: str = Field(
+        default="linear",
+        description="Axis scale type, e.g. linear, log, symlog, or other.",
+    )
+    units: Optional[str] = Field(
+        default=None,
+        description="Measurement units shown on the axis, if present.",
+    )
+    data_type: Optional[str] = Field(
+        default=None,
+        description="Data type represented on the axis, e.g. count, intensity, percentage.",
+    )
+    is_inverted: bool = Field(
+        default=False,
+        description="Whether the axis appears visually inverted.",
+    )
 
 
 class _ConfidenceScoresMeta(BaseModel):
@@ -183,11 +195,26 @@ class _MethodsAndDatasets(BaseModel):
 class _VisionFigureExtraction(BaseModel):
     """Multimodal extraction payload used for PDF figure parsing."""
 
-    title: str = ""
-    purpose: str = ""
-    subfigures: list[_SubFigureMeta] = Field(default_factory=list)
-    methods_used: list[str] = Field(default_factory=list)
-    datasets_used: list[str] = Field(default_factory=list)
+    title: str = Field(
+        default="",
+        description="Short figure title inferred from the caption and visual panels.",
+    )
+    purpose: str = Field(
+        default="",
+        description="High-level summary of the scientific purpose and key takeaway of the figure.",
+    )
+    subfigures: list[_SubFigureMeta] = Field(
+        default_factory=list,
+        description="All visually distinct panels in this figure, each with panel-level metadata.",
+    )
+    methods_used: list[str] = Field(
+        default_factory=list,
+        description="Methods or assays explicitly evidenced by the figure/caption context.",
+    )
+    datasets_used: list[str] = Field(
+        default_factory=list,
+        description="Dataset identifiers referenced in the figure/caption context.",
+    )
 
 
 # ---------------------------------------------------------------------------

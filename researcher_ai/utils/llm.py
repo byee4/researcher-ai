@@ -20,7 +20,7 @@ import logging
 import os
 import base64
 from pathlib import Path
-from typing import Any, Literal, Optional, TypeVar
+from typing import Any, Callable, Literal, Optional, TypeVar
 
 from pydantic import BaseModel
 
@@ -34,73 +34,12 @@ DEFAULT_MAX_TOKENS = 4096
 
 T = TypeVar("T", bound=BaseModel)
 
+MODEL_ALIAS_MAP: dict[str, str] = {
+    # Keep stable project aliases while routing to currently supported vendor ids.
+    "gemini-3.1-pro": "gemini-2.5-pro",
+    "gpt-5.4-planning": "gpt-4.1",
+}
 
-# ---------------------------------------------------------------------------
-# Lazy client (avoid import-time auth errors in test environments)
-# ---------------------------------------------------------------------------
-_client_anthropic = None
-_client_openai = None
-
-
-def _infer_provider(model: str) -> Literal["anthropic", "openai"]:
-    """Infer provider from model id."""
-    m = (model or "").strip().lower()
-    if m.startswith("claude"):
-        return "anthropic"
-    if (
-        m.startswith("gpt")
-        or m.startswith("chatgpt")
-        or m.startswith("o1")
-        or m.startswith("o3")
-        or m.startswith("o4")
-    ):
-        return "openai"
-    return "anthropic"
-
-
-def _get_client(provider: Literal["anthropic", "openai"]):
-    """Return a shared LLM client for the selected provider."""
-    global _client_anthropic, _client_openai
-    if provider == "anthropic":
-        if _client_anthropic is None:
-            key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("LLM_API_KEY")
-            if not key:
-                raise EnvironmentError(
-                    "No LLM API key found. Set LLM_API_KEY (preferred) or ANTHROPIC_API_KEY:\n"
-                    "  import os; os.environ['LLM_API_KEY'] = '...'\n"
-                    "  or set it in your shell before launching."
-                )
-            from anthropic import Anthropic  # type: ignore[import]
-            _client_anthropic = Anthropic(api_key=key)
-        return _client_anthropic
-    if _client_openai is None:
-        key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-        if not key:
-            raise EnvironmentError(
-                "No LLM API key found. Set LLM_API_KEY (preferred) or OPENAI_API_KEY:\n"
-                "  import os; os.environ['LLM_API_KEY'] = '...'\n"
-                "  or set it in your shell before launching."
-            )
-        from openai import OpenAI  # type: ignore[import]
-        _client_openai = OpenAI(api_key=key)
-    return _client_openai
-
-
-def _extract_openai_text(response: Any) -> str:
-    """Extract text from OpenAI chat completion response."""
-    try:
-        content = response.choices[0].message.content
-    except Exception as exc:  # pragma: no cover - defensive
-        raise ValueError(f"Unexpected OpenAI response shape: {type(response).__name__}") from exc
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
-        return "".join(parts)
-    return str(content or "")
 
 
 def _strip_json_fences(text: str) -> str:
@@ -148,51 +87,77 @@ def _infer_provider_from_model_router(model_router: str) -> Literal["anthropic",
 def _resolve_api_key_for_model_router(model_router: str) -> str:
     """Resolve API key env var by model router/provider."""
     provider = _infer_provider_from_model_router(model_router)
-    key_env_map = {
-        "openai": "OPENAI_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-    }
-    key_name = key_env_map[provider]
-    key = os.environ.get(key_name) or os.environ.get("LLM_API_KEY")
+    if provider == "openai":
+        key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
+        if key:
+            return key
+        raise EnvironmentError(
+            f"No API key found for model '{model_router}'. "
+            "Set OPENAI_API_KEY (or LLM_API_KEY fallback)."
+        )
+    if provider == "anthropic":
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        if key:
+            return key
+        raise EnvironmentError(
+            f"No API key found for model '{model_router}'. "
+            "Set ANTHROPIC_API_KEY."
+        )
+
+    # Gemini / Google AI Studio
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if key:
         return key
     raise EnvironmentError(
         f"No API key found for model '{model_router}'. "
-        f"Set {key_name} (or LLM_API_KEY fallback)."
+        "Set GEMINI_API_KEY or GOOGLE_API_KEY."
     )
 
 
-def _openai_chat_create(
-    *,
-    client: Any,
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    temperature: float,
-    response_format: Optional[dict[str, Any]] = None,
-) -> Any:
-    """Create an OpenAI chat completion with compatibility fallbacks."""
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-    }
-    if response_format is not None:
-        kwargs["response_format"] = response_format
-    if temperature != 0.0:
-        kwargs["temperature"] = temperature
-    # Newer OpenAI models expect max_completion_tokens.
-    kwargs["max_completion_tokens"] = max_tokens
+def _normalize_model_router_for_litellm(model_router: str) -> str:
+    """Map project model aliases to provider-prefixed LiteLLM model ids."""
+    model = (model_router or "").strip()
+    if not model:
+        return model
+    model = MODEL_ALIAS_MAP.get(model, model)
+    if "/" in model:
+        return model
+
+    provider = _infer_provider_from_model_router(model)
+    if provider == "gemini":
+        return f"gemini/{model}"
+    if provider == "anthropic":
+        return f"anthropic/{model}"
+    return f"openai/{model}"
+
+
+def _normalize_temperature_for_model(llm_model: str, temperature: float) -> float:
+    """Apply provider/model-specific temperature constraints."""
+    if "/gpt-5" in llm_model and temperature != 1.0:
+        return 1.0
+    return temperature
+
+
+def _normalize_max_tokens_for_model(llm_model: str, max_tokens: int) -> int:
+    """Apply provider/model-specific max token floors for reliable responses."""
+    if llm_model.startswith("gemini/"):
+        return max(max_tokens, 400)
+    return max_tokens
+
+
+def _litellm_completion(**kwargs: Any) -> Any:
     try:
-        return client.chat.completions.create(**kwargs)
-    except TypeError:
-        kwargs.pop("max_completion_tokens", None)
-        kwargs["max_tokens"] = max_tokens
-        return client.chat.completions.create(**kwargs)
+        from litellm import completion  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError(
+            "litellm is required for LLM operations. "
+            "Install with: pip install litellm"
+        ) from exc
+    return completion(**kwargs)
 
 
 # ---------------------------------------------------------------------------
-# Simple text → text
+# Simple text -> text
 # ---------------------------------------------------------------------------
 
 def generate_text(
@@ -205,16 +170,11 @@ def generate_text(
     cache: Optional["LLMCache"] = None,
 ) -> str:
     """Universal text-generation interface via LiteLLM."""
-    try:
-        from litellm import completion  # type: ignore[import]
-    except ImportError as exc:
-        raise ImportError(
-            "litellm is required for generate_text(). "
-            "Install with: pip install litellm"
-        ) from exc
-
+    llm_model = _normalize_model_router_for_litellm(model_router)
+    normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
+    normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
     if cache is not None:
-        cached = cache.get(prompt, system, model_router)
+        cached = cache.get(prompt, system, llm_model)
         if cached is not None:
             logger.debug("LLM text cache hit")
             return cached
@@ -225,16 +185,16 @@ def generate_text(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    response = completion(
-        model=model_router,
+    response = _litellm_completion(
+        model=llm_model,
         messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
+        max_tokens=normalized_max_tokens,
+        temperature=normalized_temperature,
         api_key=api_key,
     )
     text = _extract_message_text(response)
     if cache is not None:
-        cache.set(prompt, system, model_router, text)
+        cache.set(prompt, system, llm_model, text)
     return text
 
 
@@ -267,14 +227,6 @@ def extract_structured_data(
         cache: Optional LLM cache.
         image_bytes: Optional list of raw image bytes for multimodal calls.
     """
-    try:
-        from litellm import completion  # type: ignore[import]
-    except ImportError as exc:
-        raise ImportError(
-            "litellm is required for extract_structured_data(). "
-            "Install with: pip install litellm"
-        ) from exc
-
     # Backward-compatible kwargs support for migrated call-sites.
     if schema is None:
         schema = legacy_kwargs.pop("output_schema", None)
@@ -284,13 +236,16 @@ def extract_structured_data(
         raise ValueError("extract_structured_data requires a Pydantic schema.")
     if not model_router:
         raise ValueError("extract_structured_data requires model_router.")
+    llm_model = _normalize_model_router_for_litellm(model_router)
+    normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
+    normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
 
     json_schema = schema.model_json_schema()
     image_bytes = image_bytes or []
     image_hash = hashlib.sha256(b"".join(image_bytes)).hexdigest()[:16] if image_bytes else ""
     cache_key_extra = json.dumps(json_schema, sort_keys=True) + image_hash
     if cache is not None:
-        cached_text = cache.get(prompt, system + cache_key_extra, model_router)
+        cached_text = cache.get(prompt, system + cache_key_extra, llm_model)
         if cached_text is not None:
             logger.debug("LLM structured cache hit")
             return schema.model_validate_json(cached_text)
@@ -327,27 +282,182 @@ def extract_structured_data(
     )
 
     kwargs: dict[str, Any] = {
-        "model": model_router,
+        "model": llm_model,
         "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
+        "max_tokens": normalized_max_tokens,
+        "temperature": normalized_temperature,
         "api_key": api_key,
     }
+    if llm_model.startswith("gemini/"):
+        kwargs["safety_settings"] = [
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        ]
+    strict_schema = json.loads(json.dumps(json_schema))
+    strict_schema["additionalProperties"] = False
     try:
-        response = completion(
+        response = _litellm_completion(
+            **kwargs,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.__name__ or "ExtractionSchema",
+                    "strict": True,
+                    "schema": strict_schema,
+                },
+            },
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "response_format" in msg or "schema" in msg or "unsupported" in msg:
+            try:
+                response = _litellm_completion(
+                    **kwargs,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as inner_exc:
+                inner_msg = str(inner_exc).lower()
+                if not llm_model.startswith("gemini/") and "response_format" in inner_msg:
+                    response = _litellm_completion(**kwargs)
+                else:
+                    raise inner_exc
+        else:
+            raise exc
+
+    text = _strip_json_fences(_extract_message_text(response))
+    if not text:
+        # Guard against provider responses that return empty content despite a 200.
+        retry_response = _litellm_completion(
             **kwargs,
             response_format={"type": "json_object"},
         )
+        text = _strip_json_fences(_extract_message_text(retry_response))
+        if not text and not llm_model.startswith("gemini/"):
+            retry_response = _litellm_completion(**kwargs)
+            text = _strip_json_fences(_extract_message_text(retry_response))
+        if not text:
+            raise ValueError(f"Empty structured response from model '{llm_model}'.")
+    try:
+        result = schema.model_validate_json(text)
     except Exception:
-        response = completion(**kwargs)
-
-    text = _strip_json_fences(_extract_message_text(response))
-    result = schema.model_validate_json(text)
+        if llm_model.startswith("gemini/"):
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["max_tokens"] = max(int(retry_kwargs.get("max_tokens", 0)), 800)
+            retry_response = _litellm_completion(
+                **retry_kwargs,
+                response_format={"type": "json_object"},
+            )
+            retry_text = _strip_json_fences(_extract_message_text(retry_response))
+            result = schema.model_validate_json(retry_text)
+        else:
+            raise
 
     if cache is not None:
-        cache.set(prompt, system + cache_key_extra, model_router, result.model_dump_json())
+        cache.set(prompt, system + cache_key_extra, llm_model, result.model_dump_json())
 
     return result
+
+
+def extract_structured_data_with_tools(
+    *,
+    model_router: str,
+    prompt: str,
+    schema: type[T],
+    tools: list[dict[str, Any]],
+    tool_handlers: dict[str, Callable[[dict[str, Any]], str]],
+    system: str = "",
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = 0.0,
+    max_tool_rounds: int = 6,
+) -> T:
+    """Structured extraction with tool-calling loop via LiteLLM."""
+    llm_model = _normalize_model_router_for_litellm(model_router)
+    normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
+    normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+    api_key = _resolve_api_key_for_model_router(model_router)
+    messages: list[dict[str, Any]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Return ONLY valid JSON matching this schema after using tools as needed:\n"
+                f"{json.dumps(schema.model_json_schema(), ensure_ascii=False)}"
+            ),
+        }
+    )
+
+    for _ in range(max_tool_rounds):
+        response = _litellm_completion(
+            model=llm_model,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            max_tokens=normalized_max_tokens,
+            temperature=normalized_temperature,
+            api_key=api_key,
+        )
+        msg = response.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        if not tool_calls:
+            text = _strip_json_fences(_extract_message_text(response))
+            return schema.model_validate_json(text)
+
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+        assistant_tool_calls: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            tc_id = getattr(tc, "id", None) or tc.get("id")
+            fn_obj = getattr(tc, "function", None) or tc.get("function", {})
+            fn_name = getattr(fn_obj, "name", None) or fn_obj.get("name")
+            fn_args = getattr(fn_obj, "arguments", None) or fn_obj.get("arguments", "{}")
+            assistant_tool_calls.append(
+                {
+                    "id": tc_id,
+                    "type": "function",
+                    "function": {"name": fn_name, "arguments": fn_args},
+                }
+            )
+        assistant_msg["tool_calls"] = assistant_tool_calls
+        messages.append(assistant_msg)
+
+        for call in assistant_tool_calls:
+            fn_name = call["function"]["name"]
+            args_raw = call["function"]["arguments"] or "{}"
+            try:
+                args = json.loads(args_raw)
+            except json.JSONDecodeError:
+                args = {}
+            handler = tool_handlers.get(fn_name)
+            if handler is None:
+                result = f"Unknown tool: {fn_name}"
+            else:
+                try:
+                    result = handler(args)
+                except Exception as exc:  # pragma: no cover - defensive
+                    result = f"Tool error: {type(exc).__name__}: {exc}"
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "name": fn_name,
+                    "content": result,
+                }
+            )
+
+    # Fallback after exhausting tool rounds.
+    final = _litellm_completion(
+        model=llm_model,
+        messages=messages,
+        max_tokens=normalized_max_tokens,
+        temperature=normalized_temperature,
+        api_key=api_key,
+    )
+    text = _strip_json_fences(_extract_message_text(final))
+    return schema.model_validate_json(text)
 
 
 # ---------------------------------------------------------------------------

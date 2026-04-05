@@ -961,8 +961,7 @@ class TestParse:
     def test_search_protocol_docs_returns_relevant_hit(self):
         parser = _make_parser()
         docs = parser.search_protocol_docs("STAR alignment runThreadN genomeDir", top_k=2)
-        assert len(docs) >= 1
-        assert any("STAR" in d["title"] for d in docs)
+        assert "STAR" in docs
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_parse_infers_missing_parameters_for_computational_steps(self, mock_llm):
@@ -1032,6 +1031,82 @@ class TestParse:
         method = parser.parse(SAMPLE_PAPER, computational_only=True)
         step = method.assays[0].steps[0]
         assert step.parameters == {"outSAMtype": "BAM"}
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_parse_agentic_rag_calls_search_tool_and_infers_software(self, mock_llm):
+        paper = SAMPLE_PAPER.model_copy(
+            update={
+                "sections": [
+                    Section(
+                        title="Methods",
+                        text=(
+                            "Reads were mapped to the human genome, and differential expression "
+                            "was calculated."
+                        ),
+                        figures_referenced=[],
+                    )
+                ],
+                "raw_text": "Reads were mapped to the human genome, and differential expression was calculated.",
+            }
+        )
+
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayList:
+                return _AssayList(assay_names=["Read mapping", "Differential expression"])
+            if output_schema is _AssayClassificationList:
+                return _AssayClassificationList(
+                    assays=[
+                        _AssayCategoryItem(name="Read mapping", method_category="computational"),
+                        _AssayCategoryItem(name="Differential expression", method_category="computational"),
+                    ]
+                )
+            if output_schema is _AssayMeta:
+                if "Read mapping" in prompt:
+                    return _make_assay_meta(
+                        name="Read mapping",
+                        steps=[_make_step_meta(1, description="Read alignment", software=None, parameters={})],
+                    )
+                return _make_assay_meta(
+                    name="Differential expression",
+                    steps=[_make_step_meta(1, description="Differential expression analysis", software=None, parameters={})],
+                )
+            if output_schema is _DependencyList:
+                return _DependencyList(dependencies=[])
+            if output_schema is _AvailabilityStatement:
+                return _AvailabilityStatement(data_statement="", code_statement="")
+            return MagicMock()
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+
+        tool_calls: list[str] = []
+
+        def fake_tool_loop(**kwargs):
+            parser.search_protocol_docs("read mapping eclip star", top_k=3)
+            tool_calls.append("search_protocol_docs")
+            prompt = kwargs.get("prompt", "")
+            inferred_sw = "DESeq2" if "Differential expression" in prompt else "STAR"
+            return _StepParameterInferenceList(
+                updates=[
+                    _StepParameterInference(
+                        step_number=1,
+                        inferred_parameters={"runThreadN": "8"},
+                        inferred_software=inferred_sw,
+                    )
+                ]
+            )
+
+        with patch.object(parser, "search_protocol_docs", wraps=parser.search_protocol_docs) as spy_search, patch(
+            "researcher_ai.parsers.methods_parser._extract_structured_data_with_tools",
+            side_effect=fake_tool_loop,
+        ):
+            method = parser.parse(paper, computational_only=True)
+
+        assert tool_calls
+        assert spy_search.call_count >= 1
+        step_software = [s.software for a in method.assays for s in a.steps]
+        assert "STAR" in step_software
+        assert any((s or "").upper().startswith("DESEQ2") for s in step_software)
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_json_roundtrip(self, mock_llm):
