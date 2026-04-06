@@ -1,0 +1,54 @@
+# LLM provider and model configuration for researcher-ai.
+#
+# Edit this file to change model aliases, provider settings, or defaults
+# without touching Python source code.  All values shown here are the
+# built-in defaults; remove or override only the fields you need to change.
+
+# ── Global defaults ────────────────────────────────────────────────────────────
+defaults:
+  # Maximum output tokens when none is specified by the caller.
+  max_tokens: 4096
+  # HTTP timeout in seconds for a single LLM request.
+  timeout_seconds: 90
+  # Hard cap on inlined image bytes (per image) for multimodal calls.
+  # Images larger than this are rejected before the API call is made.
+  # 5 MB default keeps base64 payload well inside typical token limits.
+  max_image_bytes: 5242880   # 5 * 1024 * 1024
+
+# ── Model aliases ──────────────────────────────────────────────────────────────
+# Maps stable *project* model names to the current vendor model IDs.
+# This lets callers use a stable name (e.g. "gemini-3.1-pro") while the
+# underlying vendor ID is updated here without changing call-sites.
+aliases:
+  gemini-3.1-pro: gemini-2.5-pro
+  gpt-5.4-planning: gpt-4.1
+
+# ── Per-provider settings ──────────────────────────────────────────────────────
+providers:
+  openai:
+    # Ordered list of env vars to try for the API key.
+    api_key_envs: [OPENAI_API_KEY, LLM_API_KEY]
+    # Temperature must be exactly 1.0 for GPT-5 generation models.
+    # Keys are model substring patterns; values are the enforced temperature.
+    temperature_constraints:
+      "/gpt-5": 1.0
+
+  anthropic:
+    api_key_envs: [ANTHROPIC_API_KEY]
+
+  gemini:
+    api_key_envs: [GEMINI_API_KEY, GOOGLE_API_KEY]
+    # Gemini sometimes returns truncated JSON when max_tokens is very small.
+    # Enforce a floor to guarantee valid structured output.
+    min_max_tokens: 400
+    # Safety categories are disabled for scientific literature, which often
+    # contains clinical or biological content that would otherwise be blocked.
+    safety_settings:
+      - category: HARM_CATEGORY_DANGEROUS_CONTENT
+        threshold: BLOCK_NONE
+      - category: HARM_CATEGORY_HARASSMENT
+        threshold: BLOCK_NONE
+      - category: HARM_CATEGORY_HATE_SPEECH
+        threshold: BLOCK_NONE
+      - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+        threshold: BLOCK_NONE

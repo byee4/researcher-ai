@@ -1,0 +1,16 @@
+pydantic>=2.0
+httpx
+beautifulsoup4
+lxml
+pysradb
+biopython
+pdfplumber
+Pillow
+nbformat
+PyYAML
+anthropic
+openai
+litellm
+langgraph
+chromadb
+sentence-transformers
