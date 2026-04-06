@@ -59,6 +59,11 @@ from researcher_ai.models.pipeline import (
     PipelineConfig,
     PipelineStep,
 )
+from researcher_ai.models.confidence import (
+    StepConfidence,
+    AssayConfidence,
+    PipelineConfidence,
+)
 
 __all__ = [
     # paper
@@ -77,4 +82,6 @@ __all__ = [
     "Command", "Environment", "LicenseType", "Software",
     # pipeline
     "Pipeline", "PipelineBackend", "PipelineConfig", "PipelineStep",
+    # confidence
+    "StepConfidence", "AssayConfidence", "PipelineConfidence",
 ]

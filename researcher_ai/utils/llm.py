@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL = os.environ.get("RESEARCHER_AI_MODEL", "gpt-5.4")
 DEFAULT_MAX_TOKENS = 4096
+DEFAULT_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("RESEARCHER_AI_LLM_TIMEOUT_SECONDS", "90"))
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -191,6 +192,7 @@ def generate_text(
         max_tokens=normalized_max_tokens,
         temperature=normalized_temperature,
         api_key=api_key,
+        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
     )
     text = _extract_message_text(response)
     if cache is not None:
@@ -287,6 +289,7 @@ def extract_structured_data(
         "max_tokens": normalized_max_tokens,
         "temperature": normalized_temperature,
         "api_key": api_key,
+        "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
     }
     if llm_model.startswith("gemini/"):
         kwargs["safety_settings"] = [
@@ -400,6 +403,7 @@ def extract_structured_data_with_tools(
             max_tokens=normalized_max_tokens,
             temperature=normalized_temperature,
             api_key=api_key,
+            timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
         )
         msg = response.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None) or []
@@ -455,6 +459,7 @@ def extract_structured_data_with_tools(
         max_tokens=normalized_max_tokens,
         temperature=normalized_temperature,
         api_key=api_key,
+        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
     )
     text = _strip_json_fences(_extract_message_text(final))
     return schema.model_validate_json(text)

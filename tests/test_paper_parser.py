@@ -416,6 +416,34 @@ JATS_XML_KEY_RESOURCES_TABLE_FIXTURE = textwrap.dedent("""\
     </article>
 """)
 
+JATS_XML_FLOATS_KEY_RESOURCES_TABLE_FIXTURE = textwrap.dedent("""\
+    <article>
+      <front>
+        <article-meta>
+          <article-id pub-id-type="pmid">11633308</article-id>
+          <title-group><article-title>Float-group key resources table test</article-title></title-group>
+        </article-meta>
+      </front>
+      <body>
+        <sec>
+          <title>Methods</title>
+          <p>Accession numbers are listed in the key resources table.</p>
+        </sec>
+      </body>
+      <floats-group>
+        <table-wrap id="T1">
+          <label>Table 1</label>
+          <caption><title>Key Resources Table</title></caption>
+          <table>
+            <tbody>
+              <tr><td>Data source</td><td>GEO</td><td>GSE249247</td></tr>
+            </tbody>
+          </table>
+        </table-wrap>
+      </floats-group>
+    </article>
+""")
+
 
 class TestParsePubmedXml:
     def test_pmid_extracted(self):
@@ -719,6 +747,12 @@ class TestParseJatsXml:
         assert "Key Resources Table" in methods["text"]
         assert "GSE314176" in methods["text"]
         assert "PRJNA123456" in methods["text"]
+
+    def test_float_group_key_resources_table_accessions_are_extracted(self):
+        result = parse_jats_xml(JATS_XML_FLOATS_KEY_RESOURCES_TABLE_FIXTURE)
+        table_sections = [s for s in result["sections"] if "key resources table" in (s["title"] or "").lower()]
+        assert table_sections, "Expected standalone key-resources table section from float group"
+        assert any("GSE249247" in (s.get("text") or "") for s in table_sections)
 
 
 # ── llm.py cache tests ────────────────────────────────────────────────────────

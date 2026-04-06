@@ -32,6 +32,7 @@ def test_extract_structured_data_routes_openai_key(monkeypatch):
     out = extract_structured_data("gpt-5.4", "prompt", _Out)
     assert out.value == "ok"
     assert calls[-1]["api_key"] == "openai-test-key"
+    assert calls[-1]["timeout"] == 90.0
 
 
 def test_extract_structured_data_routes_anthropic_key(monkeypatch):
@@ -101,6 +102,7 @@ def test_generate_text_uses_universal_router(monkeypatch):
     out = generate_text("gpt-5.4-planning", "prompt")
     assert out == "hello"
     assert calls[-1]["api_key"] == "openai-test-key"
+    assert calls[-1]["timeout"] == 90.0
 
 
 def test_extract_structured_data_router_models_requested(monkeypatch):
@@ -119,4 +121,4 @@ def test_extract_structured_data_router_models_requested(monkeypatch):
     extract_structured_data("claude-4.6-opus", "p", _Out)
     extract_structured_data("gemini-3.1-pro", "p", _Out)
 
-    assert seen_models == ["gpt-5.4-planning", "claude-4.6-opus", "gemini-3.1-pro"]
+    assert seen_models == ["openai/gpt-4.1", "anthropic/claude-4.6-opus", "gemini/gemini-2.5-pro"]
