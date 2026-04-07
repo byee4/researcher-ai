@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import textwrap
 import tempfile
 from pathlib import Path
 from typing import Optional
+
+from pydantic import BaseModel, Field
 
 from researcher_ai.models.dataset import Dataset
 from researcher_ai.models.figure import Figure
@@ -38,6 +39,8 @@ from researcher_ai.models.software import Software
 from researcher_ai.pipeline.jupyter_gen import JupyterGenerator
 from researcher_ai.pipeline.nextflow_gen import NextflowGenerator
 from researcher_ai.pipeline.snakemake_gen import SnakemakeGenerator
+from researcher_ai.pipeline.bash_tool import BashTool
+from researcher_ai.utils.llm import SYSTEM_METHODS_PARSER, extract_structured_data
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +72,11 @@ def _sanitize_id(text: str) -> str:
     return s or "step"
 
 
+class _SnakefileRepair(BaseModel):
+    repaired_snakefile: str = Field(default="")
+    rationale: str = Field(default="")
+
+
 class PipelineBuilder:
     """Build an executable pipeline from parsed paper components.
 
@@ -90,6 +98,8 @@ class PipelineBuilder:
         self,
         llm_model: str = os.environ.get("RESEARCHER_AI_MODEL", "gpt-5.4"),
         validation_max_rounds: int = 3,
+        bash_tool: Optional[BashTool] = None,
+        hpc_profile_name: Optional[str] = None,
     ):
         """Initialize PipelineBuilder.
 
@@ -99,6 +109,8 @@ class PipelineBuilder:
         self.llm_model = llm_model
         self._software_index: dict[str, Software] = {}
         self.validation_max_rounds = validation_max_rounds
+        self.bash_tool = bash_tool or BashTool(timeout_seconds=120)
+        self.hpc_profile_name = hpc_profile_name or os.environ.get("RESEARCHER_AI_HPC_PROFILE", "tscc")
 
     # ------------------------------------------------------------------
     # Public API
@@ -133,7 +145,7 @@ class PipelineBuilder:
         # Always generate Snakemake for custom steps
         if backend == PipelineBackend.SNAKEMAKE or self._needs_custom_steps(config):
             pipeline.snakefile_content = SnakemakeGenerator().generate(config)
-            pipeline.tscc_slurm_profile = self._tscc_slurm_profile()
+            pipeline.tscc_slurm_profile = self._slurm_profile()
             pipeline.snakefile_content, pipeline.validation_report = self._validate_and_repair_snakefile(
                 snakefile_content=pipeline.snakefile_content,
                 profile=pipeline.tscc_slurm_profile,
@@ -147,6 +159,17 @@ class PipelineBuilder:
         pipeline.conda_env_yaml = self._generate_conda_env(software)
 
         return pipeline
+
+    def _slurm_profile(self) -> dict[str, str]:
+        """Resolve SLURM profile for configured HPC environment."""
+        profile = self.hpc_profile_name.strip().lower()
+        if profile == "local":
+            return {
+                "partition": os.environ.get("LOCAL_SLURM_PARTITION", "local"),
+                "account": os.environ.get("LOCAL_SLURM_ACCOUNT", "local"),
+                "mem": os.environ.get("LOCAL_SLURM_MEM", "16G"),
+            }
+        return self._tscc_slurm_profile()
 
     def _tscc_slurm_profile(self) -> dict[str, str]:
         """Return default TSCC-optimized Snakemake SLURM profile arguments."""
@@ -218,30 +241,23 @@ class PipelineBuilder:
                     f"mem_mb={self._parse_mem_mb(profile['mem'])}",
                 ]
 
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=tmp,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    check=False,
-                )
-            except FileNotFoundError:
-                return {"status": "tool_unavailable", "cmd": " ".join(cmd), "stderr": "snakemake not installed"}
-            except subprocess.TimeoutExpired as exc:
-                return {"status": "error", "cmd": " ".join(cmd), "stderr": f"TimeoutExpired: {exc}"}
-
-            status = "ok" if proc.returncode == 0 else "error"
+            result = self.bash_tool.run(cmd, cwd=tmp)
             return {
-                "status": status,
-                "cmd": " ".join(cmd),
-                "returncode": proc.returncode,
-                "stdout": proc.stdout[-5000:],
-                "stderr": proc.stderr[-5000:],
+                "status": result.status,
+                "cmd": result.cmd,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
             }
 
     def _repair_snakefile(self, snakefile_content: str, error_text: str) -> str:
+        """Repair Snakefile using LLM-first strategy with deterministic fallback."""
+        llm_repaired = self.repair_snakefile_with_llm(snakefile_content, error_text)
+        if llm_repaired != snakefile_content:
+            return llm_repaired
+        return self._repair_snakefile_deterministic(snakefile_content, error_text)
+
+    def _repair_snakefile_deterministic(self, snakefile_content: str, error_text: str) -> str:
         """Apply conservative deterministic fixes based on Snakemake traceback text."""
         patched = snakefile_content
         if "min_version" in error_text and "from snakemake.utils import min_version" not in patched:
@@ -251,6 +267,29 @@ class PipelineBuilder:
         if "rule all" in error_text and "rule all:" not in patched:
             patched = patched + '\nrule all:\n    input:\n        []\n'
         return patched
+
+    def repair_snakefile_with_llm(self, snakefile_content: str, error_text: str) -> str:
+        """Attempt LLM-guided repair. Returns original content when unavailable."""
+        if not error_text.strip():
+            return snakefile_content
+        try:
+            repaired = extract_structured_data(
+                model_router=self.llm_model,
+                prompt=(
+                    "Repair this Snakemake Snakefile so it passes lint/dry-run.\n"
+                    "Keep edits minimal and preserve workflow intent.\n\n"
+                    f"ERROR:\n{error_text[:3000]}\n\n"
+                    f"SNAKEFILE:\n{snakefile_content[:12000]}"
+                ),
+                schema=_SnakefileRepair,
+                system=SYSTEM_METHODS_PARSER,
+            )
+            candidate = (repaired.repaired_snakefile or "").strip()
+            if candidate and candidate != snakefile_content.strip():
+                return candidate + "\n"
+        except Exception:
+            return snakefile_content
+        return snakefile_content
 
     def _parse_mem_mb(self, mem_text: str) -> int:
         """Convert mem strings (e.g., 64G) to MB for Snakemake defaults."""
