@@ -56,6 +56,7 @@ from researcher_ai.parsers.methods_parser import (
     _normalize_assay_name,
     _METHODS_TITLE_RE,
 )
+from researcher_ai.utils.rag import ProtocolRAGStore
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,36 @@ def _make_parser() -> MethodsParser:
     parser.llm_model = "test-model"
     parser.cache = None
     return parser
+
+
+def test_methods_parser_init_accepts_protocol_rag_injection(tmp_path):
+    injected_store = ProtocolRAGStore(
+        docs_dir=tmp_path / "docs",
+        persist_dir=tmp_path / "rag",
+    )
+    parser = MethodsParser(
+        llm_model="test-model",
+        protocol_rag=injected_store,
+    )
+    assert parser.protocol_rag is injected_store
+
+
+def test_methods_parser_init_passes_rag_configuration(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "star.md").write_text("STAR runThreadN", encoding="utf-8")
+    parser = MethodsParser(
+        llm_model="test-model",
+        rag_docs_dir=str(docs_dir),
+        rag_persist_dir=str(tmp_path / "persist"),
+        rag_embedding_model="all-MiniLM-L6-v2",
+        rag_chunk_size=320,
+        rag_chunk_overlap=32,
+        rag_lexical_min_token_len=2,
+    )
+    assert parser.protocol_rag.chunk_size == 320
+    assert parser.protocol_rag.chunk_overlap == 32
+    assert parser.protocol_rag.lexical_min_token_len == 2
 
 
 def _make_step_meta(n: int = 1, **kwargs) -> _StepMeta:
@@ -1107,6 +1138,46 @@ class TestParse:
         step_software = [s.software for a in method.assays for s in a.steps]
         assert "STAR" in step_software
         assert any((s or "").upper().startswith("DESEQ2") for s in step_software)
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_parse_rag_falls_back_to_non_tool_mode_on_tool_failure(self, mock_llm):
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayList:
+                return _AssayList(assay_names=["Read mapping"])
+            if output_schema is _AssayClassificationList:
+                return _AssayClassificationList(
+                    assays=[_AssayCategoryItem(name="Read mapping", method_category="computational")]
+                )
+            if output_schema is _AssayMeta:
+                return _make_assay_meta(
+                    name="Read mapping",
+                    steps=[_make_step_meta(1, description="Align with STAR", software="STAR", software_version=None, parameters={})],
+                )
+            if output_schema is _StepParameterInferenceList:
+                return _StepParameterInferenceList(
+                    updates=[_StepParameterInference(step_number=1, inferred_parameters={"runThreadN": "8"})]
+                )
+            if output_schema is _DependencyList:
+                return _DependencyList(dependencies=[])
+            if output_schema is _AvailabilityStatement:
+                return _AvailabilityStatement(data_statement="", code_statement="")
+            return MagicMock()
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+
+        with patch(
+            "researcher_ai.parsers.methods_parser._extract_structured_data_with_tools",
+            side_effect=RuntimeError("tool calling unavailable"),
+        ), patch.object(
+            parser,
+            "search_protocol_docs",
+            return_value="source=star.md\nSTAR recommends runThreadN for parallelism.",
+        ) as mock_search:
+            method = parser.parse(SAMPLE_PAPER, computational_only=True)
+
+        assert mock_search.called
+        assert any("inferred_parameters_fallback_mode" in w for w in method.parse_warnings)
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_json_roundtrip(self, mock_llm):

@@ -15,8 +15,16 @@ def _default_docs_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "knowledge" / "protocols"
 
 
-def _tokenize(text: str) -> set[str]:
-    return {t for t in re.findall(r"[A-Za-z0-9_\-]+", (text or "").lower()) if len(t) > 2}
+def _default_persist_dir() -> Path:
+    # Absolute path rooted at project directory (not process working directory).
+    return Path(__file__).resolve().parents[2] / ".rag_chroma"
+
+
+def _tokenize(text: str, *, min_token_len: int = 2) -> set[str]:
+    return {
+        t for t in re.findall(r"[A-Za-z0-9_\-]+", (text or "").lower())
+        if len(t) >= min_token_len
+    }
 
 
 def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> list[str]:
@@ -52,10 +60,18 @@ class ProtocolRAGStore:
         docs_dir: Optional[str | Path] = None,
         persist_dir: Optional[str | Path] = None,
         collection_name: str = "protocol_docs",
+        embedding_model: str = "all-MiniLM-L6-v2",
+        chunk_size: int = 900,
+        chunk_overlap: int = 120,
+        lexical_min_token_len: int = 2,
     ):
         self.docs_dir = Path(docs_dir) if docs_dir else _default_docs_dir()
-        self.persist_dir = Path(persist_dir) if persist_dir else Path(".rag_chroma")
+        self.persist_dir = Path(persist_dir).resolve() if persist_dir else _default_persist_dir()
         self.collection_name = collection_name
+        self.embedding_model = embedding_model
+        self.chunk_size = max(200, int(chunk_size))
+        self.chunk_overlap = max(0, min(int(chunk_overlap), self.chunk_size - 1))
+        self.lexical_min_token_len = max(1, int(lexical_min_token_len))
         self._chunks: list[_Chunk] = []
         self._chroma = None
         self._embedder = None
@@ -69,7 +85,7 @@ class ProtocolRAGStore:
             import chromadb  # type: ignore[import]
             from sentence_transformers import SentenceTransformer  # type: ignore[import]
 
-            self._embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            self._embedder = SentenceTransformer(self.embedding_model)
             client = chromadb.PersistentClient(path=str(self.persist_dir))
             col = client.get_or_create_collection(name=self.collection_name)
             ids = [f"doc-{i}" for i in range(len(self._chunks))]
@@ -97,7 +113,11 @@ class ProtocolRAGStore:
             return chunks
         for path in sorted(self.docs_dir.glob("*.md")):
             text = path.read_text(encoding="utf-8")
-            for chunk in _chunk_text(text):
+            for chunk in _chunk_text(
+                text,
+                chunk_size=self.chunk_size,
+                overlap=self.chunk_overlap,
+            ):
                 chunks.append(_Chunk(source=path.name, text=chunk))
         return chunks
 
@@ -118,10 +138,10 @@ class ProtocolRAGStore:
             except Exception as exc:
                 logger.info("Chroma query failed, falling back to lexical retrieval: %s", exc)
 
-        q_tokens = _tokenize(query)
+        q_tokens = _tokenize(query, min_token_len=self.lexical_min_token_len)
         scored: list[tuple[int, _Chunk]] = []
         for c in self._chunks:
-            overlap = len(q_tokens & _tokenize(c.text))
+            overlap = len(q_tokens & _tokenize(c.text, min_token_len=self.lexical_min_token_len))
             if overlap > 0:
                 scored.append((overlap, c))
         scored.sort(key=lambda x: x[0], reverse=True)
