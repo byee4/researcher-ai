@@ -193,6 +193,7 @@ class PipelineBuilder:
         """
         attempts: list[dict[str, object]] = []
         current = snakefile_content
+        repair_error_history: list[str] = []
 
         for round_idx in range(1, self.validation_max_rounds + 1):
             lint = self._run_snakemake_check(current, profile, lint=True)
@@ -202,13 +203,32 @@ class PipelineBuilder:
                 attempts.append({"round": round_idx, **dry})
                 if dry["status"] == "ok":
                     return current, {"passed": True, "attempts": attempts}
-                current = self._repair_snakefile(current, str(dry.get("stderr", "")))
+                repair_error_history.append(str(dry.get("stderr", "")))
+                current = self._repair_snakefile(
+                    current,
+                    self._repair_error_context(repair_error_history),
+                )
             else:
                 if lint["status"] == "tool_unavailable":
                     return current, {"passed": True, "attempts": attempts, "skipped": "snakemake_unavailable"}
-                current = self._repair_snakefile(current, str(lint.get("stderr", "")))
+                repair_error_history.append(str(lint.get("stderr", "")))
+                current = self._repair_snakefile(
+                    current,
+                    self._repair_error_context(repair_error_history),
+                )
 
         return current, {"passed": False, "attempts": attempts}
+
+    def _repair_error_context(self, errors: list[str]) -> str:
+        """Compose cumulative repair context from previous validation failures."""
+        if not errors:
+            return ""
+        lines: list[str] = []
+        for idx, err in enumerate(errors[-5:], start=1):
+            if not (err or "").strip():
+                continue
+            lines.append(f"[round_error_{idx}] {err.strip()}")
+        return "\n".join(lines)
 
     def _run_snakemake_check(
         self,
