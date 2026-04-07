@@ -36,6 +36,8 @@ def main() -> int:
     method = state["method"]
     datasets = state.get("datasets", [])
     software = state.get("software", [])
+    workflow_graph = state.get("workflow_graph")
+    workflow_graph_issues = state.get("workflow_graph_validation_issues", [])
     pipeline = state["pipeline"]
 
     output = {
@@ -44,6 +46,10 @@ def main() -> int:
         "method": method.model_dump(mode="json"),
         "datasets": [d.model_dump(mode="json") for d in datasets],
         "software": [s.model_dump(mode="json") for s in software],
+        "workflow_graph": workflow_graph.model_dump(mode="json") if workflow_graph is not None else None,
+        "workflow_graph_validation_issues": [
+            issue.model_dump(mode="json") for issue in workflow_graph_issues
+        ],
         "pipeline": pipeline.model_dump(mode="json"),
         "dataset_parse_errors": state.get("dataset_parse_errors", []),
     }

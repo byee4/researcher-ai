@@ -15,6 +15,7 @@ from researcher_ai.models.method import Method
 from researcher_ai.models.paper import Paper, PaperSource
 from researcher_ai.models.pipeline import Pipeline
 from researcher_ai.models.software import Software
+from researcher_ai.models.workflow_graph import GraphValidationIssue, WorkflowGraph
 from researcher_ai.parsers.data.geo_parser import GEOParser
 from researcher_ai.parsers.data.sra_parser import SRAParser
 from researcher_ai.parsers.figure_parser import FigureParser
@@ -22,6 +23,7 @@ from researcher_ai.parsers.methods_parser import MethodsParser
 from researcher_ai.parsers.paper_parser import PaperParser
 from researcher_ai.parsers.software_parser import SoftwareParser
 from researcher_ai.pipeline.builder import PipelineBuilder
+from researcher_ai.pipeline.workflow_graph_mapper import build_workflow_graph
 
 try:  # pragma: no cover - optional runtime dependency
     from langgraph.graph import END, StateGraph
@@ -54,6 +56,8 @@ class WorkflowState(TypedDict, total=False):
     datasets: list[Dataset]
     dataset_parse_errors: list[str]
     software: list[Software]
+    workflow_graph: WorkflowGraph
+    workflow_graph_validation_issues: list[GraphValidationIssue]
     pipeline: Pipeline
     build_attempts: int
     max_build_attempts: int
@@ -111,6 +115,7 @@ class WorkflowOrchestrator:
         graph.add_node("parse_methods", self._node_parse_methods)
         graph.add_node("parse_datasets", self._node_parse_datasets)
         graph.add_node("parse_software", self._node_parse_software)
+        graph.add_node("build_workflow_graph", self._node_build_workflow_graph)
         graph.add_node("build_pipeline", self._node_build_pipeline)
 
         graph.set_entry_point("parse_paper")
@@ -118,7 +123,8 @@ class WorkflowOrchestrator:
         graph.add_edge("parse_figures", "parse_methods")
         graph.add_edge("parse_methods", "parse_datasets")
         graph.add_edge("parse_datasets", "parse_software")
-        graph.add_edge("parse_software", "build_pipeline")
+        graph.add_edge("parse_software", "build_workflow_graph")
+        graph.add_edge("build_workflow_graph", "build_pipeline")
         graph.add_conditional_edges(
             "build_pipeline",
             self._next_after_build_pipeline,
@@ -136,6 +142,7 @@ class WorkflowOrchestrator:
             self._node_parse_methods,
             self._node_parse_datasets,
             self._node_parse_software,
+            self._node_build_workflow_graph,
         ):
             state.update(fn(state))
         while True:
@@ -204,6 +211,22 @@ class WorkflowOrchestrator:
         self._require_state_keys(state, ["method"], node="parse_software")
         software = self.software_parser.parse_from_method(state["method"])
         return {"software": software, "progress": 80, "stage": "parsed_software"}
+
+    def _node_build_workflow_graph(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["method"], node="build_workflow_graph")
+        graph = build_workflow_graph(
+            method=state["method"],
+            datasets=state.get("datasets", []),
+            software=state.get("software", []),
+            targets=[getattr(fig, "figure_id", "") for fig in state.get("figures", []) if getattr(fig, "figure_id", "")],
+        )
+        issues = graph.validation_issues()
+        return {
+            "workflow_graph": graph,
+            "workflow_graph_validation_issues": issues,
+            "progress": 88,
+            "stage": "built_workflow_graph",
+        }
 
     def _node_build_pipeline(self, state: WorkflowState) -> WorkflowState:
         self._require_state_keys(state, ["method"], node="build_pipeline")
