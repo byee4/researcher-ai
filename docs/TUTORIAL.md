@@ -1,96 +1,197 @@
-# researcher-ai Tutorial (Current)
+# Full Tutorial
 
-This document consolidates README/tutorial/quickstart-style guidance for `researcher-ai` and updates steps to match the current code layout.
+This tutorial walks through a full publication-to-pipeline run and explains each artifact.
 
-## Scope and Inputs
+## Tutorial goals
 
-Merged source sets:
-- `README.md`
-- `docs/how_to_read.md`
-- `examples/example_paper/README.md`
-- legacy root-level docs mapped here where relevant: `ROADMAP.md`
+By the end, you will:
+- run the orchestrator from a PMID and a PDF,
+- inspect parsed outputs (paper, figures, methods, datasets, software),
+- inspect generated pipeline artifacts,
+- understand how to adjust model/runtime settings,
+- know how to debug common failures.
 
-## 1) Environment Setup
+## Prerequisites
 
-From workspace root:
+- Python 3.10+
+- A virtual environment with project dependencies
+- At least one LLM API key configured
 
-```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai
-python -m pip install -r requirements.txt
-python -m pip install -e ./researcher-ai
-```
-
-Optional docs build extras:
+Install:
 
 ```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai
-python -m pip install -e ".[docs]"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-## 2) Core Python Workflow
-
-Typical import path is the installed package `researcher_ai` from inside `researcher-ai` project directory.
-
-```python
-from researcher_ai.parsers.paper_parser import PaperParser
-from researcher_ai.parsers.figure_parser import FigureParser
-from researcher_ai.parsers.methods_parser import MethodsParser
-from researcher_ai.parsers.software_parser import SoftwareParser
-from researcher_ai.parsers.data.geo_parser import GEOParser
-from researcher_ai.parsers.data.sra_parser import SRAParser
-from researcher_ai.pipeline.builder import PipelineBuilder
-```
-
-Pipeline sequence:
-1. Parse a paper (`PaperParser.parse`).
-2. Parse figures (`FigureParser.parse_all_figures`).
-3. Parse methods (`MethodsParser.parse(..., computational_only=True)` by default).
-4. Parse referenced datasets (GEO/SRA).
-5. Parse software from method graph.
-6. Build executable pipeline artifacts.
-
-## 3) Scripted End-to-End Run
+## Step 1: Run workflow using PMID
 
 ```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai
 python scripts/run_workflow.py \
   --source 26971820 \
   --source-type pmid \
-  --output /tmp/researcher_ai_run.json
+  --output /tmp/tutorial_pmid.json
 ```
 
-Accepted source types for this script are currently `pmid` and `pdf`.
+Progress lines look like:
 
-## 4) Tests
+```text
+PROGRESS|5|Initializing state-graph orchestrator
+...
+PROGRESS|100|Completed
+```
+
+## Step 2: Inspect output JSON
 
 ```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai
-python -m pytest
+jq 'keys' /tmp/tutorial_pmid.json
 ```
 
-Targeted examples:
+Expected top-level keys:
+- `paper`
+- `figures`
+- `method`
+- `datasets`
+- `software`
+- `pipeline`
+- `dataset_parse_errors`
+
+Quick checks:
 
 ```bash
-python -m pytest tests/test_integration.py
-python -m pytest tests/test_pipeline_builder.py
-python -m pytest tests/test_figure_parser.py
+jq '.paper.title' /tmp/tutorial_pmid.json
+jq '.figures | length' /tmp/tutorial_pmid.json
+jq '.method.assay_graph.assays | length' /tmp/tutorial_pmid.json
+jq '.datasets | length' /tmp/tutorial_pmid.json
+jq '.software | length' /tmp/tutorial_pmid.json
+jq '.pipeline.config.steps | length' /tmp/tutorial_pmid.json
 ```
 
-## 5) Build API Docs (Sphinx)
+## Step 3: Run workflow using a local PDF
 
 ```bash
-cd /Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai
-sphinx-build -b html docs docs/_build/html
+python scripts/run_workflow.py \
+  --source /absolute/path/to/paper.pdf \
+  --source-type pdf \
+  --output /tmp/tutorial_pdf.json
 ```
 
-Output index:
-`/Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai/docs/_build/html/index.html`
+Use this mode when papers are not easily resolvable by PMID/PMCID.
 
-## 6) Example Paper Outputs
+## Step 4: Understand each stage
 
-`examples/example_paper/` contains generated artifacts (e.g., Snakefile, environment YAML, notebook, pipeline JSON) from a representative eCLIP publication run.
+### `PaperParser`
 
-## Accuracy Notes (Compared to Older Tutorial Docs)
+- Detects source type (PMID, PMCID, DOI, URL, PDF).
+- For PMCID, parses JATS full text.
+- For PMID, combines PubMed metadata with PMCID/BioC enrichment when available.
+- For PDF/URL, performs text extraction + structured LLM parsing.
 
-- Current package install target is `./researcher-ai`.
-- End-to-end orchestration script path is `researcher-ai/scripts/run_workflow.py`.
+### `FigureParser`
+
+- Uses figure IDs, captions, in-text references, and optional image snippets.
+- Produces panel-level structure (`SubFigure`) with confidence metrics.
+- Optional calibration layer (`FigureCalibrationEngine`) adjusts figure typing.
+
+### `MethodsParser`
+
+- Extracts assay graph, steps, dependencies, and availability statements.
+- Defaults to `computational_only=True` in orchestrator flow.
+
+### Dataset parsers (`GEOParser`, `SRAParser`)
+
+- Detect accession IDs from paper/method/figure text.
+- Fetch metadata and normalize into `Dataset` models.
+
+### `SoftwareParser`
+
+- Maps method steps to software tooling, environments, and commands.
+
+### `PipelineBuilder`
+
+- Topologically orders assay dependencies.
+- Generates `PipelineConfig` and pipeline artifacts:
+  - Snakemake content,
+  - optional Nextflow content,
+  - Jupyter figure reproduction notebook,
+  - conda environment YAML.
+
+## Step 5: Persist generated pipeline files
+
+`run_workflow.py` writes a single JSON blob. Extract artifacts as files:
+
+```bash
+mkdir -p /tmp/tutorial_pipeline
+jq -r '.pipeline.snakefile_content // empty' /tmp/tutorial_pmid.json > /tmp/tutorial_pipeline/Snakefile
+jq -r '.pipeline.nextflow_content // empty' /tmp/tutorial_pmid.json > /tmp/tutorial_pipeline/main.nf
+jq -r '.pipeline.jupyter_content // empty' /tmp/tutorial_pmid.json > /tmp/tutorial_pipeline/figure_reproduction.ipynb
+jq -r '.pipeline.conda_env_yaml // empty' /tmp/tutorial_pmid.json > /tmp/tutorial_pipeline/environment.yml
+```
+
+## Step 6: Optional direct Python usage
+
+```python
+from researcher_ai.models.paper import PaperSource
+from researcher_ai.pipeline.orchestrator import WorkflowOrchestrator
+
+orchestrator = WorkflowOrchestrator(max_build_attempts=2)
+state = orchestrator.run("26971820", PaperSource.PMID)
+print(state["paper"].title)
+print(len(state.get("figures", [])))
+print(len(state.get("datasets", [])))
+```
+
+## Step 7: Run and interpret tests
+
+```bash
+pytest
+```
+
+Useful suites:
+
+```bash
+pytest tests/test_integration.py
+pytest tests/test_pipeline_builder.py
+pytest tests/test_figure_parser.py
+pytest tests/test_phase4_state_graph.py
+```
+
+## Step 8: Common troubleshooting
+
+## LLM auth errors
+
+- Confirm one provider key is set.
+- Confirm `RESEARCHER_AI_MODEL` maps to a configured provider/model.
+
+## Dataset parser failures
+
+- Check `dataset_parse_errors` in workflow output.
+- Set `NCBI_API_KEY` to reduce throttling risk for NCBI calls.
+
+## Snakemake validation issues
+
+`PipelineBuilder` attempts lint/dry-run checks and can retry with repairs.
+Inspect:
+- `pipeline.validation_report`
+
+## Missing figures from PMID path
+
+Some papers expose limited figure assets via metadata APIs. Try PDF source mode for richer extraction.
+
+## Step 9: Customize behavior via environment
+
+```bash
+export RESEARCHER_AI_MODEL="gpt-5.4"
+export RESEARCHER_AI_FIGURE_CALIBRATION="on"
+export RESEARCHER_AI_FIGURE_CALIBRATION_CONFIDENCE_THRESHOLD="0.75"
+export RESEARCHER_AI_BIOC_ENABLED="1"
+export RESEARCHER_AI_HPC_PROFILE="tscc"
+```
+
+## Step 10: Next steps
+
+- Move to the architecture guide: `docs/ARCHITECTURE.md`
+- Read API details: `docs/api.rst`
+- Configure docs hosting: `docs/readthedocs.md`

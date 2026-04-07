@@ -1,0 +1,62 @@
+# Development Guide
+
+## Repository layout
+
+- `researcher_ai/models/`: typed Pydantic contracts
+- `researcher_ai/parsers/`: paper/figure/method/software/dataset parsing
+- `researcher_ai/pipeline/`: orchestrator + workflow generators
+- `researcher_ai/utils/`: LLM, PDF, PubMed, RAG utilities
+- `scripts/`: runnable workflow and benchmark scripts
+- `tests/`: unit + integration + snapshot tests
+
+## Local setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev,docs]"
+```
+
+## Lint and type checks
+
+```bash
+ruff check .
+mypy researcher_ai
+```
+
+## Test strategy
+
+Run all:
+
+```bash
+pytest
+```
+
+Useful focused test runs:
+
+```bash
+pytest tests/test_paper_parser.py
+pytest tests/test_methods_parser.py
+pytest tests/test_pipeline_builder.py
+pytest tests/test_phase4_state_graph.py
+```
+
+Live/network-dependent tests are marked with `live`.
+
+## Adding or changing parser behavior
+
+1. Update model contracts first if output shape changes.
+2. Add/adjust parser logic.
+3. Add tests (or snapshot updates) for each changed behavior.
+4. Run focused parser tests and end-to-end integration test.
+
+## Documentation maintenance
+
+Docs are built with Sphinx + MyST Markdown.
+
+```bash
+python -m sphinx -b html docs docs/_build/html
+```
+
+When adding public functions/classes, ensure docstrings are present so API docs remain complete.

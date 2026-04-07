@@ -1,82 +1,106 @@
-# researcher-ai Architecture (Current)
+# Architecture
 
-This document consolidates prior architecture/evaluation/calibration/improvement markdown and reflects the current implementation in `researcher_ai/*`.
+This document describes the current end-to-end architecture implemented in `researcher_ai/`.
 
-## Scope and Inputs
+## High-level flow
 
-Merged source sets:
-- Architecture/evaluation/calibration plans: `EVALUATION_ARCHITECTURE.md`, `EVALUATION_PHASE_1.md` ... `EVALUATION_PHASE_8.md`, `BIOC_INTEGRATION_PLAN.md`, `FIGURE_PARSER_CALIBRATION.md`, `FIGURE_PARSER_IMPROVEMENT_PLAN.md`, `ROADMAP.md`
-- Code validation anchors: `researcher_ai/parsers/*`, `researcher_ai/pipeline/*`, `researcher_ai/models/*`, `scripts/run_workflow.py`, `tests/*`
+`researcher-ai` transforms a publication into executable workflow artifacts.
 
-## System Overview
+1. Parse source publication into `Paper`.
+2. Parse figures into structured `Figure` and `SubFigure` models.
+3. Parse methods into computational assay graph (`Method`).
+4. Detect and resolve data accessions into `Dataset` records.
+5. Map method steps to `Software` and command/environment metadata.
+6. Build workflow config and generated artifacts (`Pipeline`).
 
-`researcher-ai` converts a publication into structured objects and then into executable workflow artifacts.
+## Source ingestion and paper parsing
 
-Main flow:
-1. `PaperParser` builds a `Paper` object from PMID/PMCID/DOI/PDF/URL.
-2. `FigureParser` converts paper figure IDs/captions/context into structured `Figure` + `SubFigure` outputs.
-3. `MethodsParser` extracts assays/steps/dependencies into a `Method` with `AssayGraph`.
-4. GEO/SRA parsers expand detected accessions into structured dataset metadata.
-5. `SoftwareParser` maps method steps to software tools, environments, commands, licensing metadata.
-6. `PipelineBuilder` builds ordered pipeline steps and generators emit Snakemake/Nextflow/Jupyter/conda outputs.
+`PaperParser` supports:
+- PMCID
+- PMID
+- DOI
+- URL
+- PDF
 
-## Core Modules
+Parsing strategy prioritizes richer sources first:
+- PMCID/JATS full text when available
+- PMID metadata and PMCID resolution
+- DOI to PMID resolution
+- PDF text extraction + LLM parsing
+- URL text extraction + LLM parsing
 
-### Data Models (`researcher_ai/models`)
-- Pydantic models define contracts for paper, figure, method, dataset, software, and pipeline components.
-- `Method` uses `AssayGraph` + explicit dependency edges.
-- Pipeline outputs are carried in `Pipeline`/`PipelineConfig` with backend-specific generated content.
+BioC enrichment can augment methods/results/figure context.
 
-### Paper Parsing (`researcher_ai/parsers/paper_parser.py`)
-- Source detection supports PMCID, PMID, DOI, URL, and PDF.
-- PMCID path: JATS full text parse first, then BioC context enrichment.
-- PMID path: PubMed metadata + PMCID resolution/fallback behavior.
-- File detection explicitly rejects non-PDF files.
-- Output can include BioC-derived section/figure context attached to `Paper`.
+## Figure parsing and calibration
 
-### Figure Parsing + Calibration (`researcher_ai/parsers/figure_parser.py`, `figure_calibration.py`)
-- Uses caption/context extraction + LLM structured outputs for panel-level typing.
-- Maintains explicit confidence fields (`classification_confidence`, `composite_confidence`, `confidence_scores`).
-- Adds deterministic cue reconciliation and calibration pass (`FigureCalibrationEngine`).
-- Includes utilities for figure URL retrieval from PMID/PMCID.
+`FigureParser` combines:
+- figure IDs from paper context,
+- caption extraction,
+- in-text mention context,
+- optional panel image extraction,
+- structured multimodal LLM extraction.
 
-### Methods Parsing (`researcher_ai/parsers/methods_parser.py`)
-- Finds methods text from section-title heuristics and availability sections.
-- Identifies assays and classifies each as experimental/computational/mixed.
-- Default behavior is `computational_only=True`; non-computational assays are filtered and logged as parse warnings.
-- Builds dependency graph and extracts code/data availability text.
+Outputs include panel-level confidence metrics. `FigureCalibrationEngine` can apply deterministic calibration rules from `researcher_ai/calibration/figure_registry.yaml`.
 
-### Dataset Parsing (`researcher_ai/parsers/data/*.py`)
-- `GEOParser`: validates GSE/GSM/GPL, fetches E-utilities metadata, handles SuperSeries and optional bounded recursion.
-- `SRAParser`: validates SRP/SRX/SRR (+ ENA/DDBJ forms), delegates to `pysradb` and returns project/experiment/run-scoped metadata.
+## Methods parsing
 
-### Software Parsing (`researcher_ai/parsers/software_parser.py`)
-- Pulls software mentions from method steps or raw text.
-- Uses known-tool registry first, then structured LLM enrichment.
-- Classifies license/open-source alternatives and builds command/environment records.
+`MethodsParser` extracts:
+- assays and categories,
+- per-assay computational steps,
+- dependency edges,
+- data/code availability statements,
+- parse warnings.
 
-### Pipeline Assembly (`researcher_ai/pipeline/builder.py`)
-- Filters method graph to computational assays before pipeline generation.
-- Topologically orders assays by dependency edges.
-- Creates `PipelineStep`s with intra-assay and inter-assay dependencies.
-- Emits Snakemake and/or Nextflow content plus Jupyter reproduction notebook and conda env YAML.
+The orchestrator path defaults to computational assay extraction (`computational_only=True`).
 
-## Operational Entry Points
+## Dataset parsing
 
-- Library usage in notebooks (`notebooks/*`).
-- Workflow runner script: `scripts/run_workflow.py`.
-  - Emits staged progress.
-  - Parses paper → figures → method → datasets → software → pipeline.
-  - Serializes one JSON result payload.
+`WorkflowOrchestrator` collects accessions from:
+- raw paper text,
+- section text,
+- method availability statements,
+- figure captions.
 
-## Testing and Quality Controls
+It then routes accessions to:
+- `GEOParser` for GEO families (`GSE`, `GSM`, `GPL`, `GDS`)
+- `SRAParser` for SRA/ENA-style IDs (`SRP`, `SRX`, `SRR`, `PRJNA`, `PRJEB`, etc.)
 
-- Test coverage spans parser modules and pipeline generation (`tests/test_*`).
-- Figure calibration has dedicated fixtures and report script (`tests/fixtures/figure_calibration`, `scripts/figure_calibration_report.py`).
-- Integration tests and notebook tests are present (`tests/test_integration.py`, `tests/test_notebooks.py`).
+Errors are captured in `dataset_parse_errors` instead of hard-failing the run.
 
-## Accuracy Notes (Compared to Older Dev Docs)
+## Software parsing
 
-- Pipeline builder now enforces computational assay filtering itself (`_computational_only_method`), not only upstream parser filtering.
-- Paper source detection behavior now raises on existing non-PDF files rather than silently treating all files as PDFs.
-- Evaluation-phase pass counts in older docs are historical snapshots and not treated as current-state metrics here.
+`SoftwareParser` infers tooling from the method graph and method text using:
+- known software registries,
+- structured LLM enrichment,
+- license/open-source alternative classification,
+- command extraction.
+
+## Orchestration model
+
+`WorkflowOrchestrator` runs a stage graph with:
+- LangGraph state machine when available,
+- deterministic sequential fallback when unavailable.
+
+State keys include parsed artifacts plus `progress`, `stage`, and build retry counters.
+
+## Pipeline generation
+
+`PipelineBuilder`:
+- filters to computational assays,
+- topologically orders steps by dependency,
+- generates Snakemake and/or Nextflow code,
+- generates Jupyter notebook content,
+- generates conda environment YAML,
+- validates Snakemake (lint/dry-run) with optional repair loops.
+
+## Data contracts
+
+Pydantic models under `researcher_ai/models/` define stable contracts for:
+- paper,
+- figure,
+- method,
+- dataset,
+- software,
+- pipeline.
+
+These models are the primary interface between parsers and generators.

@@ -1,0 +1,59 @@
+# Configuration
+
+`researcher-ai` behavior is controlled by model routing config and environment variables.
+
+## Model/provider config file
+
+Default model and provider behavior lives in:
+`researcher_ai/config/models.yaml`
+
+Use this file to:
+- map stable aliases to vendor model IDs,
+- define provider API key precedence,
+- enforce provider-specific constraints (temperature, min tokens, safety settings),
+- adjust default timeout and token settings.
+
+## Environment variables
+
+## Provider credentials
+
+- `OPENAI_API_KEY`
+- `LLM_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `GEMINI_API_KEY`
+- `GOOGLE_API_KEY`
+
+## Core runtime
+
+- `RESEARCHER_AI_MODEL`: default model router (default `gpt-5.4`)
+- `RESEARCHER_AI_LLM_TIMEOUT_SECONDS`: LLM timeout override
+- `RESEARCHER_AI_MAX_IMAGE_BYTES`: image-size cap for multimodal calls
+
+## BioC / PubMed
+
+- `RESEARCHER_AI_BIOC_ENABLED`: enable/disable BioC enrichment
+- `RESEARCHER_AI_BIOC_CACHE_DIR`: custom BioC cache directory
+- `RESEARCHER_AI_BIOC_CACHE_TTL_SEC`: BioC cache TTL (seconds)
+- `NCBI_API_KEY`: API key for higher NCBI throughput
+
+## Figure calibration
+
+- `RESEARCHER_AI_FIGURE_CALIBRATION`: `on`/`off`
+- `RESEARCHER_AI_FIGURE_CALIBRATION_CONFIDENCE_THRESHOLD`: threshold used by calibration logic
+
+## Pipeline/HPC
+
+- `RESEARCHER_AI_HPC_PROFILE`: `tscc` or `local`
+- `TSCC_SLURM_PARTITION`, `TSCC_SLURM_ACCOUNT`, `TSCC_SLURM_MEM`
+- `LOCAL_SLURM_PARTITION`, `LOCAL_SLURM_ACCOUNT`, `LOCAL_SLURM_MEM`
+
+## Example shell setup
+
+```bash
+export OPENAI_API_KEY="..."
+export RESEARCHER_AI_MODEL="gpt-5.4"
+export NCBI_API_KEY="..."
+export RESEARCHER_AI_BIOC_ENABLED="1"
+export RESEARCHER_AI_FIGURE_CALIBRATION="on"
+export RESEARCHER_AI_HPC_PROFILE="tscc"
+```

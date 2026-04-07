@@ -1,12 +1,22 @@
 researcher-ai Documentation
 ===========================
 
-This site documents the Python API with focus on parser and pipeline functions.
+`researcher-ai` parses scientific publications and generates reproducible analysis workflows.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents
+   :caption: Guide
+
+   getting_started
+   TUTORIAL
+   configuration
+   cli
+   ARCHITECTURE
+   development
+   readthedocs
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Reference
 
    api
-   how_to_read
-

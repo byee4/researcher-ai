@@ -1,4 +1,4 @@
-"""Sphinx configuration for researcher-ai API docs."""
+"""Sphinx configuration for researcher-ai documentation."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
     "myst_parser",
 ]
 
@@ -23,8 +24,25 @@ autosummary_generate = True
 autodoc_typehints = "description"
 autodoc_member_order = "bysource"
 
+# Keep docs builds resilient on RTD where runtime-heavy packages may not be present.
+autodoc_mock_imports = [
+    "anthropic",
+    "openai",
+    "litellm",
+    "langgraph",
+    "chromadb",
+    "sentence_transformers",
+    "pysradb",
+    "pdfplumber",
+    "PIL",
+]
+
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
+
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "previous/**"]
 
 html_theme = "furo"
-
