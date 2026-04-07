@@ -343,12 +343,16 @@ class FigureParser:
         llm_model: str = llm_utils.DEFAULT_MODEL,
         cache_dir: Optional[str] = None,
         vision_model: str = "gemini-3.1-pro",
+        cache: Optional[LLMCache] = None,
+        calibration_engine: Optional[FigureCalibrationEngine] = None,
     ):
-        """Initialize FigureParser with model and optional structured-response cache."""
+        """Initialize FigureParser with optional dependency injection hooks."""
         self.llm_model = llm_model
         self.vision_model = vision_model
-        self.cache = LLMCache(cache_dir) if cache_dir else None
-        self.calibration_engine = FigureCalibrationEngine()
+        self.cache = cache if cache is not None else (LLMCache(cache_dir) if cache_dir else None)
+        self.calibration_engine = (
+            calibration_engine if calibration_engine is not None else FigureCalibrationEngine()
+        )
 
     # ── Public API ───────────────────────────────────────────────────────────
 

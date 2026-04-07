@@ -5,6 +5,7 @@ from unittest.mock import patch
 import types
 import sys
 import os
+import inspect
 
 from PIL import Image, ImageDraw
 import pytest
@@ -215,6 +216,24 @@ def test_marker_fallback_logs_warning_and_returns_plain_text(tmp_path: Path, cap
 
     assert output == "plain-text-fallback"
     assert "falling back to plain text" in caplog.text
+
+
+def test_marker_pdf_compatibility_smoke():
+    marker_pdf = pytest.importorskip("marker.converters.pdf")
+    marker_models = pytest.importorskip("marker.models")
+
+    PdfConverter = getattr(marker_pdf, "PdfConverter", None)
+    create_model_dict = getattr(marker_models, "create_model_dict", None)
+
+    assert callable(PdfConverter)
+    assert callable(create_model_dict)
+
+    init_sig = inspect.signature(PdfConverter)
+    params = init_sig.parameters
+    accepts_artifact_dict = "artifact_dict" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    assert accepts_artifact_dict
 
 
 def test_extract_figure_panel_images_resizes_to_limit(tmp_path: Path):

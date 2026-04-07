@@ -7,6 +7,8 @@ than PyPDF2) and Pillow for image I/O.
 from __future__ import annotations
 
 from collections import deque
+import importlib
+import importlib.metadata
 import os
 import logging
 import re
@@ -16,6 +18,8 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+_MARKER_MIN_VERSION = (1, 9, 0)
+_MARKER_MAX_VERSION_EXCLUSIVE = (1, 11, 0)
 
 # pdfplumber is listed as a required dependency; import lazily so the module
 # can be imported in test environments where only models are needed.
@@ -77,13 +81,10 @@ def extract_markdown_from_pdf_with_marker(pdf_path: str | Path) -> str:
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    # Marker API variants differ by release; keep this path resilient.
     try:
-        from marker.converters.pdf import PdfConverter  # type: ignore[import]
-        from marker.models import create_model_dict  # type: ignore[import]
-
-        converter = PdfConverter(artifact_dict=create_model_dict())
-        rendered = converter(str(pdf_path))
+        _warn_if_marker_version_outside_supported_range()
+        converter = _build_marker_converter()
+        rendered = _call_marker_converter(converter, str(pdf_path))
         markdown = getattr(rendered, "markdown", None)
         if isinstance(markdown, str) and markdown.strip():
             return markdown
@@ -492,6 +493,60 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
         seen.add(item)
         out.append(item)
     return out
+
+
+def _warn_if_marker_version_outside_supported_range() -> None:
+    """Log warning when installed marker-pdf version is outside tested range."""
+    try:
+        version_str = importlib.metadata.version("marker-pdf")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    parsed = _parse_semver_prefix(version_str)
+    if parsed is None:
+        logger.warning("Unable to parse marker-pdf version '%s'; continuing with compatibility fallback", version_str)
+        return
+    if not (_MARKER_MIN_VERSION <= parsed < _MARKER_MAX_VERSION_EXCLUSIVE):
+        logger.warning(
+            "marker-pdf version %s is outside tested range >=%s,<%s; "
+            "falling back to plain-text extraction may occur",
+            version_str,
+            ".".join(str(x) for x in _MARKER_MIN_VERSION),
+            ".".join(str(x) for x in _MARKER_MAX_VERSION_EXCLUSIVE),
+        )
+
+
+def _parse_semver_prefix(version_str: str) -> Optional[tuple[int, int, int]]:
+    m = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)", version_str or "")
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def _build_marker_converter():
+    """Build marker converter across known API variants."""
+    marker_pdf_mod = importlib.import_module("marker.converters.pdf")
+    marker_models_mod = importlib.import_module("marker.models")
+    PdfConverter = getattr(marker_pdf_mod, "PdfConverter")
+    create_model_dict = getattr(marker_models_mod, "create_model_dict")
+
+    # Preferred API observed in marker-pdf 1.9+.
+    try:
+        return PdfConverter(artifact_dict=create_model_dict())
+    except TypeError:
+        pass
+
+    # Fallback variant where converter takes no args.
+    return PdfConverter()
+
+
+def _call_marker_converter(converter, pdf_path: str):
+    """Run marker conversion across callable/convert() variants."""
+    if callable(converter):
+        return converter(pdf_path)
+    convert = getattr(converter, "convert", None)
+    if callable(convert):
+        return convert(pdf_path)
+    raise TypeError("marker converter is neither callable nor has a convert() method")
 
 
 # ── Section detection helpers (regex-based, no LLM) ──────────────────────────
