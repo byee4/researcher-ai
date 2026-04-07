@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -274,11 +274,25 @@ class MethodsParser:
         self,
         llm_model: str = llm_utils.DEFAULT_MODEL,
         cache_dir: Optional[str] = None,
+        protocol_rag: Optional[ProtocolRAGStore] = None,
+        rag_docs_dir: Optional[str] = None,
+        rag_persist_dir: Optional[str] = None,
+        rag_embedding_model: str = "all-MiniLM-L6-v2",
+        rag_chunk_size: int = 900,
+        rag_chunk_overlap: int = 120,
+        rag_lexical_min_token_len: int = 2,
     ):
         """Initialize MethodsParser with optional on-disk LLM cache."""
         self.llm_model = llm_model
         self.cache = LLMCache(cache_dir) if cache_dir else None
-        self.protocol_rag = ProtocolRAGStore()
+        self.protocol_rag = protocol_rag or ProtocolRAGStore(
+            docs_dir=rag_docs_dir,
+            persist_dir=rag_persist_dir,
+            embedding_model=rag_embedding_model,
+            chunk_size=rag_chunk_size,
+            chunk_overlap=rag_chunk_overlap,
+            lexical_min_token_len=rag_lexical_min_token_len,
+        )
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -894,7 +908,7 @@ class MethodsParser:
             if assay.method_category != MethodCategory.computational:
                 out.append(assay)
                 continue
-            missing = [s for s in assay.steps if _step_needs_parameter_inference(s)]
+            missing = self._collect_missing_parameter_steps(assay)
             if not missing:
                 out.append(assay)
                 continue
@@ -903,6 +917,7 @@ class MethodsParser:
                 f"- step {s.step_number}: {s.description}; software={s.software or 'unknown'}"
                 for s in missing
             )
+            rag_query = self._build_rag_query_for_steps(assay.name, missing)
             tools = [
                 {
                     "type": "function",
@@ -918,7 +933,7 @@ class MethodsParser:
                                 "query": {"type": "string"},
                                 "top_k": {"type": "integer"},
                             },
-                            "required": ["query"],
+                            "required": ["query", "top_k"],
                         },
                     },
                 }
@@ -937,6 +952,7 @@ class MethodsParser:
                         "First identify what is missing. Use the search_protocol_docs tool to retrieve "
                         "relevant SOP/manual context. Then return only grounded inferred parameters.\n\n"
                         f"ASSAY: {assay.name}\n"
+                        f"SUGGESTED RAG QUERY: {rag_query}\n"
                         f"MISSING STEPS:\n{steps_block}\n\n"
                         f"METHODS TEXT:\n{methods_text[:1800]}\n\n"
                         "Call search_protocol_docs before finalizing when any key setting is missing."
@@ -947,9 +963,39 @@ class MethodsParser:
                     system=SYSTEM_METHODS_PARSER,
                 )
             except Exception as exc:
-                logger.warning("RAG parameter inference failed for assay %r: %s", assay.name, exc)
-                out.append(assay)
-                continue
+                logger.warning(
+                    "Tool-calling RAG parameter inference failed for assay %r: %s. "
+                    "Falling back to non-tool RAG prompt.",
+                    assay.name,
+                    exc,
+                )
+                try:
+                    rag_context = self.search_protocol_docs(rag_query, top_k=3)
+                    inferred = _extract_structured_data(
+                        prompt=(
+                            "Infer missing computational-step parameters from grounded protocol context. "
+                            "Only include parameters/software supported by the retrieved context.\n\n"
+                            f"ASSAY: {assay.name}\n"
+                            f"MISSING STEPS:\n{steps_block}\n\n"
+                            f"METHODS TEXT:\n{methods_text[:1800]}\n\n"
+                            f"PROTOCOL CONTEXT:\n{rag_context}"
+                        ),
+                        output_schema=_StepParameterInferenceList,
+                        system=SYSTEM_METHODS_PARSER,
+                        model=self.llm_model,
+                        cache=self.cache,
+                    )
+                    warnings.append(
+                        f"inferred_parameters_fallback_mode: assay={assay.name!r} mode=non_tool_rag"
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "RAG parameter inference failed for assay %r even after non-tool fallback: %s",
+                        assay.name,
+                        fallback_exc,
+                    )
+                    out.append(assay)
+                    continue
 
             by_step = {u.step_number: u for u in inferred.updates}
             updated_steps: list[AnalysisStep] = []
@@ -984,6 +1030,20 @@ class MethodsParser:
                 )
             out.append(assay.model_copy(update={"steps": updated_steps}))
         return out, warnings
+
+    def _collect_missing_parameter_steps(self, assay: Assay) -> list[AnalysisStep]:
+        """Return computational steps that are missing critical reproducibility fields."""
+        return [s for s in assay.steps if _step_needs_parameter_inference(s)]
+
+    def _build_rag_query_for_steps(self, assay_name: str, steps: list[AnalysisStep]) -> str:
+        software_names = [
+            s.software.strip()
+            for s in steps
+            if s.software and s.software.strip()
+        ]
+        if software_names:
+            return f"{assay_name} {' '.join(software_names)} default parameters reproducibility"
+        return f"{assay_name} computational workflow default parameters reproducibility"
 
 
 # ---------------------------------------------------------------------------
@@ -1341,7 +1401,12 @@ def _extract_dataset_accessions(text: str) -> list[str]:
 
 
 def _step_needs_parameter_inference(step: AnalysisStep) -> bool:
-    if step.parameters:
+    has_parameters = bool(step.parameters)
+    has_software = bool(step.software and step.software.strip())
+    if has_parameters:
         return False
+    if has_software:
+        # Missing parameters with known software should trigger inference.
+        return True
     # Focus on computational tools where defaults materially impact reproducibility.
     return bool(step.software or re.search(r"align|count|differential|cluster|peak", step.description, re.IGNORECASE))

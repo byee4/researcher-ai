@@ -8,6 +8,10 @@ Design principles:
 - ``LLMCache``: thin file-based cache to avoid re-running identical prompts
   during development and testing.
 
+Provider behaviour (temperature constraints, token floors, safety settings,
+model aliases) is driven by ``researcher_ai/config/models.yaml`` so that
+deployment-specific tuning never requires source-code changes.
+
 Set ``LLM_API_KEY`` (preferred) or provider-specific keys before use.
 `RESEARCHER_AI_MODEL` controls which provider/model is used.
 """
@@ -26,21 +30,92 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Default model — configurable via environment variable
-# ---------------------------------------------------------------------------
-DEFAULT_MODEL = os.environ.get("RESEARCHER_AI_MODEL", "gpt-5.4")
-DEFAULT_MAX_TOKENS = 4096
-
 T = TypeVar("T", bound=BaseModel)
 
-MODEL_ALIAS_MAP: dict[str, str] = {
-    # Keep stable project aliases while routing to currently supported vendor ids.
+# ---------------------------------------------------------------------------
+# Config loading — reads researcher_ai/config/models.yaml once at import time
+# ---------------------------------------------------------------------------
+
+def _load_model_config() -> dict[str, Any]:
+    """Load LLM model/provider config from models.yaml.
+
+    Falls back silently to an empty dict if the file is missing or unparseable
+    so that the module always works even in minimal environments.
+    """
+    config_path = Path(__file__).parent.parent / "config" / "models.yaml"
+    if not config_path.exists():
+        logger.debug("models.yaml not found at %s — using built-in defaults", config_path)
+        return {}
+    try:
+        import yaml  # PyYAML is a project dependency
+        data = yaml.safe_load(config_path.read_text()) or {}
+        logger.debug("Loaded LLM config from %s", config_path)
+        return data
+    except Exception as exc:
+        logger.warning(
+            "Failed to load models.yaml (%s) — falling back to built-in defaults: %s",
+            config_path,
+            exc,
+        )
+        return {}
+
+
+_MODEL_CONFIG: dict[str, Any] = _load_model_config()
+
+# ---------------------------------------------------------------------------
+# Defaults — values from YAML take precedence; env vars take precedence over YAML
+# ---------------------------------------------------------------------------
+
+_DEFAULTS = _MODEL_CONFIG.get("defaults", {})
+
+DEFAULT_MAX_TOKENS: int = int(_DEFAULTS.get("max_tokens", 4096))
+DEFAULT_REQUEST_TIMEOUT_SECONDS: float = float(
+    os.environ.get(
+        "RESEARCHER_AI_LLM_TIMEOUT_SECONDS",
+        str(_DEFAULTS.get("timeout_seconds", 90)),
+    )
+)
+DEFAULT_MODEL: str = os.environ.get("RESEARCHER_AI_MODEL", "gpt-5.4")
+
+# Maximum raw bytes allowed per image in a multimodal call.
+# Configurable via env var (bytes) or models.yaml defaults.max_image_bytes.
+_MAX_IMAGE_BYTES: int = int(
+    os.environ.get(
+        "RESEARCHER_AI_MAX_IMAGE_BYTES",
+        str(_DEFAULTS.get("max_image_bytes", 5 * 1024 * 1024)),
+    )
+)
+
+# ---------------------------------------------------------------------------
+# Model alias map — loaded from YAML, safe to extend without code changes
+# ---------------------------------------------------------------------------
+
+# Built-in fallback aliases (used when YAML is absent or the key is not found).
+_BUILTIN_ALIASES: dict[str, str] = {
     "gemini-3.1-pro": "gemini-2.5-pro",
     "gpt-5.4-planning": "gpt-4.1",
 }
 
+MODEL_ALIAS_MAP: dict[str, str] = {
+    **_BUILTIN_ALIASES,
+    **_MODEL_CONFIG.get("aliases", {}),
+}
 
+# ---------------------------------------------------------------------------
+# Provider config helpers
+# ---------------------------------------------------------------------------
+
+_PROVIDER_CONFIG: dict[str, Any] = _MODEL_CONFIG.get("providers", {})
+
+
+def _provider_cfg(provider: str) -> dict[str, Any]:
+    """Return the config block for a specific provider (empty dict if absent)."""
+    return _PROVIDER_CONFIG.get(provider, {})
+
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
 
 def _strip_json_fences(text: str) -> str:
     """Strip markdown code fences around JSON, if present."""
@@ -85,32 +160,30 @@ def _infer_provider_from_model_router(model_router: str) -> Literal["anthropic",
 
 
 def _resolve_api_key_for_model_router(model_router: str) -> str:
-    """Resolve API key env var by model router/provider."""
-    provider = _infer_provider_from_model_router(model_router)
-    if provider == "openai":
-        key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-        if key:
-            return key
-        raise EnvironmentError(
-            f"No API key found for model '{model_router}'. "
-            "Set OPENAI_API_KEY (or LLM_API_KEY fallback)."
-        )
-    if provider == "anthropic":
-        key = os.environ.get("ANTHROPIC_API_KEY")
-        if key:
-            return key
-        raise EnvironmentError(
-            f"No API key found for model '{model_router}'. "
-            "Set ANTHROPIC_API_KEY."
-        )
+    """Resolve API key from environment using config-driven env-var precedence.
 
-    # Gemini / Google AI Studio
-    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if key:
-        return key
+    The list of env vars to check per provider is defined in models.yaml
+    under ``providers.<provider>.api_key_envs``.  Built-in defaults are used
+    as a fallback when the YAML key is absent.
+    """
+    provider = _infer_provider_from_model_router(model_router)
+    cfg = _provider_cfg(provider)
+
+    _builtin_envs: dict[str, list[str]] = {
+        "openai": ["OPENAI_API_KEY", "LLM_API_KEY"],
+        "anthropic": ["ANTHROPIC_API_KEY"],
+        "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    }
+    env_vars: list[str] = cfg.get("api_key_envs", _builtin_envs.get(provider, []))
+
+    for env_var in env_vars:
+        key = os.environ.get(env_var)
+        if key:
+            return key
+
     raise EnvironmentError(
-        f"No API key found for model '{model_router}'. "
-        "Set GEMINI_API_KEY or GOOGLE_API_KEY."
+        f"No API key found for model '{model_router}' (provider: {provider}). "
+        f"Set one of: {', '.join(env_vars)}."
     )
 
 
@@ -132,18 +205,90 @@ def _normalize_model_router_for_litellm(model_router: str) -> str:
 
 
 def _normalize_temperature_for_model(llm_model: str, temperature: float) -> float:
-    """Apply provider/model-specific temperature constraints."""
-    if "/gpt-5" in llm_model and temperature != 1.0:
-        return 1.0
+    """Apply provider/model-specific temperature constraints from config.
+
+    Constraints are defined in models.yaml under
+    ``providers.<provider>.temperature_constraints`` as a mapping of model
+    substring → required temperature value.
+    """
+    provider = _infer_provider_from_model_router(llm_model)
+    constraints: dict[str, float] = _provider_cfg(provider).get(
+        "temperature_constraints",
+        # Built-in fallback: GPT-5 generation models require temperature=1.0
+        {"/gpt-5": 1.0} if provider == "openai" else {},
+    )
+    for pattern, forced_temp in constraints.items():
+        if pattern in llm_model:
+            return float(forced_temp)
     return temperature
 
 
 def _normalize_max_tokens_for_model(llm_model: str, max_tokens: int) -> int:
-    """Apply provider/model-specific max token floors for reliable responses."""
-    if llm_model.startswith("gemini/"):
-        return max(max_tokens, 400)
-    return max_tokens
+    """Apply provider/model-specific max-token floors from config.
 
+    The floor is defined in models.yaml under
+    ``providers.<provider>.min_max_tokens``.
+    """
+    provider = _infer_provider_from_model_router(llm_model)
+    floor: int = _provider_cfg(provider).get(
+        "min_max_tokens",
+        # Built-in fallback: Gemini needs at least 400 tokens for reliable JSON
+        400 if provider == "gemini" else 0,
+    )
+    return max(max_tokens, floor)
+
+
+def _safety_settings_for_model(llm_model: str) -> list[dict[str, str]] | None:
+    """Return provider safety-setting overrides from config, or None.
+
+    Used to disable over-aggressive content filters for scientific literature.
+    Settings are defined in models.yaml under
+    ``providers.<provider>.safety_settings``.
+    """
+    provider = _infer_provider_from_model_router(llm_model)
+    settings = _provider_cfg(provider).get("safety_settings")
+    if settings:
+        return [dict(s) for s in settings]
+    # Built-in fallback for Gemini when YAML config is absent
+    if provider == "gemini" and not _provider_cfg(provider):
+        return [
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        ]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Image validation
+# ---------------------------------------------------------------------------
+
+def _validate_image_sizes(image_bytes: list[bytes], max_bytes: int = _MAX_IMAGE_BYTES) -> None:
+    """Raise ValueError if any image exceeds the configured byte limit.
+
+    This prevents accidentally sending multi-megabyte figures that would
+    silently blow through token limits or cause cryptic API errors.
+
+    Args:
+        image_bytes: List of raw image byte strings to validate.
+        max_bytes: Per-image byte limit.  Defaults to ``_MAX_IMAGE_BYTES``
+            (configured via ``models.yaml`` or ``RESEARCHER_AI_MAX_IMAGE_BYTES``
+            env var; factory default is 5 MB).
+    """
+    for idx, img in enumerate(image_bytes):
+        size = len(img)
+        if size > max_bytes:
+            raise ValueError(
+                f"Image at index {idx} is {size:,} bytes, which exceeds the "
+                f"{max_bytes:,}-byte limit. Resize or crop the image before "
+                "passing it to extract_structured_data()."
+            )
+
+
+# ---------------------------------------------------------------------------
+# litellm wrapper
+# ---------------------------------------------------------------------------
 
 def _litellm_completion(**kwargs: Any) -> Any:
     try:
@@ -157,7 +302,7 @@ def _litellm_completion(**kwargs: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Simple text -> text
+# Simple text → text
 # ---------------------------------------------------------------------------
 
 def generate_text(
@@ -191,6 +336,7 @@ def generate_text(
         max_tokens=normalized_max_tokens,
         temperature=normalized_temperature,
         api_key=api_key,
+        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
     )
     text = _extract_message_text(response)
     if cache is not None:
@@ -199,7 +345,7 @@ def generate_text(
 
 
 # ---------------------------------------------------------------------------
-# Structured extraction via tool_use
+# Structured extraction via response_format / tool_use
 # ---------------------------------------------------------------------------
 
 def extract_structured_data(
@@ -217,8 +363,8 @@ def extract_structured_data(
     """Universal structured extraction interface via LiteLLM.
 
     Args:
-        model_router: Target model/router string, e.g. "gpt-5.4",
-            "claude-3-7-sonnet", "gemini-3.1-pro".
+        model_router: Target model/router string, e.g. ``"gpt-5.4"``,
+            ``"claude-3-7-sonnet"``, ``"gemini-3.1-pro"``.
         prompt: User prompt.
         schema: Pydantic model class to validate structured output.
         system: Optional system prompt.
@@ -226,6 +372,8 @@ def extract_structured_data(
         temperature: Sampling temperature.
         cache: Optional LLM cache.
         image_bytes: Optional list of raw image bytes for multimodal calls.
+            Each image must be smaller than ``RESEARCHER_AI_MAX_IMAGE_BYTES``
+            (default 5 MB) or a ``ValueError`` is raised before the API call.
     """
     # Backward-compatible kwargs support for migrated call-sites.
     if schema is None:
@@ -236,13 +384,20 @@ def extract_structured_data(
         raise ValueError("extract_structured_data requires a Pydantic schema.")
     if not model_router:
         raise ValueError("extract_structured_data requires model_router.")
+
     llm_model = _normalize_model_router_for_litellm(model_router)
     normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
     normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
 
-    json_schema = schema.model_json_schema()
     image_bytes = image_bytes or []
+    # Validate image sizes before making any API call.  Pass _MAX_IMAGE_BYTES
+    # explicitly rather than relying on the default argument so that
+    # monkeypatching the module-level variable in tests takes effect correctly.
+    _validate_image_sizes(image_bytes, max_bytes=_MAX_IMAGE_BYTES)
+
+    json_schema = schema.model_json_schema()
     image_hash = hashlib.sha256(b"".join(image_bytes)).hexdigest()[:16] if image_bytes else ""
+    # sort_keys=True ensures the cache key is stable regardless of dict insertion order.
     cache_key_extra = json.dumps(json_schema, sort_keys=True) + image_hash
     if cache is not None:
         cached_text = cache.get(prompt, system + cache_key_extra, llm_model)
@@ -287,14 +442,14 @@ def extract_structured_data(
         "max_tokens": normalized_max_tokens,
         "temperature": normalized_temperature,
         "api_key": api_key,
+        "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
     }
-    if llm_model.startswith("gemini/"):
-        kwargs["safety_settings"] = [
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        ]
+
+    # Inject provider safety settings from config (e.g. Gemini content filters).
+    safety = _safety_settings_for_model(llm_model)
+    if safety:
+        kwargs["safety_settings"] = safety
+
     strict_schema = json.loads(json.dumps(json_schema))
     strict_schema["additionalProperties"] = False
     try:
@@ -328,7 +483,7 @@ def extract_structured_data(
 
     text = _strip_json_fences(_extract_message_text(response))
     if not text:
-        # Guard against provider responses that return empty content despite a 200.
+        # Guard against provider responses that return empty content despite 200.
         retry_response = _litellm_completion(
             **kwargs,
             response_format={"type": "json_object"},
@@ -400,6 +555,7 @@ def extract_structured_data_with_tools(
             max_tokens=normalized_max_tokens,
             temperature=normalized_temperature,
             api_key=api_key,
+            timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
         )
         msg = response.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None) or []
@@ -433,18 +589,18 @@ def extract_structured_data_with_tools(
                 args = {}
             handler = tool_handlers.get(fn_name)
             if handler is None:
-                result = f"Unknown tool: {fn_name}"
+                result_str = f"Unknown tool: {fn_name}"
             else:
                 try:
-                    result = handler(args)
+                    result_str = handler(args)
                 except Exception as exc:  # pragma: no cover - defensive
-                    result = f"Tool error: {type(exc).__name__}: {exc}"
+                    result_str = f"Tool error: {type(exc).__name__}: {exc}"
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call["id"],
                     "name": fn_name,
-                    "content": result,
+                    "content": result_str,
                 }
             )
 
@@ -455,6 +611,7 @@ def extract_structured_data_with_tools(
         max_tokens=normalized_max_tokens,
         temperature=normalized_temperature,
         api_key=api_key,
+        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
     )
     text = _strip_json_fences(_extract_message_text(final))
     return schema.model_validate_json(text)
@@ -471,8 +628,10 @@ def generate_text_batch(
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> list[str]:
     """Run multiple independent generation prompts sequentially."""
-    return [generate_text(prompt=p, system=system, model_router=model_router, max_tokens=max_tokens)
-            for p in prompts]
+    return [
+        generate_text(prompt=p, system=system, model_router=model_router, max_tokens=max_tokens)
+        for p in prompts
+    ]
 
 
 # ---------------------------------------------------------------------------

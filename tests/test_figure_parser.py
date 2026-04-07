@@ -52,6 +52,8 @@ from researcher_ai.parsers.figure_parser import (
     _resolve_figure_title,
     _subfigure_from_meta,
 )
+from researcher_ai.parsers.figure_calibration import FigureCalibrationEngine
+from researcher_ai.utils.llm import LLMCache
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +122,23 @@ def _make_parser() -> FigureParser:
     parser.llm_model = "test-model"
     parser.cache = None
     return parser
+
+
+def test_figure_parser_init_supports_dependency_injection():
+    injected_cache = MagicMock(spec=LLMCache)
+    injected_engine = MagicMock(spec=FigureCalibrationEngine)
+    parser = FigureParser(
+        llm_model="test-model",
+        cache=injected_cache,
+        calibration_engine=injected_engine,
+    )
+    assert parser.cache is injected_cache
+    assert parser.calibration_engine is injected_engine
+
+
+def test_figure_parser_init_uses_cache_dir_when_cache_not_injected(tmp_path: Path):
+    parser = FigureParser(llm_model="test-model", cache_dir=str(tmp_path))
+    assert isinstance(parser.cache, LLMCache)
 
 
 def _subfig_meta(**kwargs) -> _SubFigureMeta:

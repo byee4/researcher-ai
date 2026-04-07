@@ -991,6 +991,32 @@ def parse_jats_xml(xml_text: str) -> dict:
         "figure_captions": {},
         "references": [],
     }
+    seen_table_keys: set[str] = set()
+
+    def _table_key(table_wrap: ET.Element) -> str:
+        tid = (table_wrap.get("id", "") or "").strip()
+        if tid:
+            return f"id:{tid}"
+        title = _table_wrap_title(table_wrap).strip()
+        text = _elem_text_full(table_wrap).strip()
+        return f"content:{title}|{text[:160]}"
+
+    def _append_table_section(table_wrap: ET.Element) -> None:
+        key = _table_key(table_wrap)
+        if key in seen_table_keys:
+            return
+        seen_table_keys.add(key)
+        tw_title = _table_wrap_title(table_wrap)
+        tw_text = _elem_text_full(table_wrap)
+        if tw_text.strip():
+            result["sections"].append(
+                {
+                    "title": tw_title,
+                    "text": tw_text.strip(),
+                    "section_type": "table",
+                    "is_methods": False,
+                }
+            )
 
     # Article metadata (front matter)
     front = root.find(".//front")
@@ -1047,21 +1073,16 @@ def parse_jats_xml(xml_text: str) -> dict:
                     "section_type": sec_type or None,
                     "is_methods": _is_methods_section(sec_title, sec_type),
                 })
+            # Tables nested inside section trees are already represented in
+            # sec_text via _collect_section_text; mark them as seen to avoid
+            # duplicating as standalone sections in the global table sweep.
+            for tw in sec.findall(".//table-wrap"):
+                seen_table_keys.add(_table_key(tw))
 
         # Some JATS articles place key resource / accession tables directly
         # under <body> (outside <sec>). Preserve these as standalone sections.
         for tw in body.findall("./table-wrap"):
-            tw_title = _table_wrap_title(tw)
-            tw_text = _elem_text_full(tw)
-            if tw_text.strip():
-                result["sections"].append(
-                    {
-                        "title": tw_title,
-                        "text": tw_text.strip(),
-                        "section_type": "table",
-                        "is_methods": False,
-                    }
-                )
+            _append_table_section(tw)
 
     # Figure captions
     # Parse from the full article tree (not only body) since some JATS variants
@@ -1094,6 +1115,8 @@ def parse_jats_xml(xml_text: str) -> dict:
                     "section_type": sec_type or None,
                     "is_methods": _is_methods_section(sec_title, sec_type),
                 })
+            for tw in sec.findall(".//table-wrap"):
+                seen_table_keys.add(_table_key(tw))
 
         # Footnotes frequently contain accession codes in PMC manuscripts.
         # Example: <fn><bold>Accession codes</bold> ... <ext-link>GSE77634</ext-link></fn>
@@ -1113,17 +1136,7 @@ def parse_jats_xml(xml_text: str) -> dict:
 
         # Back-matter tables can also carry accession IDs.
         for tw in back.findall("./table-wrap"):
-            tw_title = _table_wrap_title(tw)
-            tw_text = _elem_text_full(tw)
-            if tw_text.strip():
-                result["sections"].append(
-                    {
-                        "title": tw_title,
-                        "text": tw_text.strip(),
-                        "section_type": "table",
-                        "is_methods": False,
-                    }
-                )
+            _append_table_section(tw)
 
         for ref in back.findall(".//ref"):
             ref_id = ref.get("id", "")
@@ -1157,6 +1170,12 @@ def parse_jats_xml(xml_text: str) -> dict:
             ref_data["authors"] = ref_authors
 
             result["references"].append(ref_data)
+
+    # Some publishers place key-resources/accession tables in float groups or
+    # other containers outside body/back sections. Sweep all table-wrap nodes
+    # so dataset IDs (e.g., GEO accessions) are not silently dropped.
+    for tw in root.findall(".//table-wrap"):
+        _append_table_section(tw)
 
     return result
 

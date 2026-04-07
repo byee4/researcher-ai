@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import researcher_ai.pipeline.orchestrator as orch_mod
 from researcher_ai.models.paper import PaperSource
 from researcher_ai.models.pipeline import Pipeline, PipelineBackend, PipelineConfig
@@ -58,3 +59,10 @@ def test_orchestrator_stops_after_max_builder_attempts(monkeypatch):
     assert state["build_attempts"] == 2
     assert state["stage"] == "builder_retry"
     assert state["pipeline"].validation_report["passed"] is False
+
+
+def test_orchestrator_state_validation_raises_on_missing_paper(monkeypatch):
+    monkeypatch.setattr(orch_mod, "_HAS_LANGGRAPH", False)
+    orchestrator = WorkflowOrchestrator(max_build_attempts=1)
+    with pytest.raises(KeyError):
+        orchestrator._node_parse_figures({"source": "x", "source_type": PaperSource.PMID})

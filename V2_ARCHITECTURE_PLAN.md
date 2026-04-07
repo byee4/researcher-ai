@@ -32,11 +32,11 @@ This document serves as an architectural blueprint for transitioning the `resear
 ---
 
 ## Phase 4: State-Graph Orchestration & Agentic Execution
-**Targets:** `scripts/django_run_workflow.py` (Replace), `researcher_ai/pipeline/builder.py`
+**Targets:** `scripts/run_workflow.py` (Replace), `researcher_ai/pipeline/builder.py`
 **Objective:** Transition from a one-shot pipeline compiler to an iterative, stateful execution loop that validates its own code before final output.
 
 > **Agent Implementation Prompt:**
-> "Deprecate the linear `django_run_workflow.py` execution script. Implement a new orchestrator using LangGraph. Define the global state using the existing Pydantic models: `Paper`, `Method`, and `PipelineConfig`. 
+> "Deprecate the linear `run_workflow.py` execution script. Implement a new orchestrator using LangGraph. Define the global state using the existing Pydantic models: `Paper`, `Method`, and `PipelineConfig`. 
 > 
 > Refactor `PipelineBuilder` into an autonomous Engineering Agent. This agent must read the populated `AssayGraph` state and generate a complete `Snakefile`. The agent must automatically inject SLURM execution profiles (`--partition`, `--account`, `--mem`) optimized specifically for the Triton Shared Computing Cluster (TSCC). 
 > 

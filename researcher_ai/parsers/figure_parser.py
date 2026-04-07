@@ -343,12 +343,16 @@ class FigureParser:
         llm_model: str = llm_utils.DEFAULT_MODEL,
         cache_dir: Optional[str] = None,
         vision_model: str = "gemini-3.1-pro",
+        cache: Optional[LLMCache] = None,
+        calibration_engine: Optional[FigureCalibrationEngine] = None,
     ):
-        """Initialize FigureParser with model and optional structured-response cache."""
+        """Initialize FigureParser with optional dependency injection hooks."""
         self.llm_model = llm_model
         self.vision_model = vision_model
-        self.cache = LLMCache(cache_dir) if cache_dir else None
-        self.calibration_engine = FigureCalibrationEngine()
+        self.cache = cache if cache is not None else (LLMCache(cache_dir) if cache_dir else None)
+        self.calibration_engine = (
+            calibration_engine if calibration_engine is not None else FigureCalibrationEngine()
+        )
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -390,6 +394,7 @@ class FigureParser:
 
         for fig_id in figure_ids:
             logger.info("Parsing %s", fig_id)
+            parse_warnings: list[str] = []
             if paper.source == PaperSource.PDF:
                 # PDF path is multimodal-first: avoid legacy text-regex routing.
                 caption, in_text = self._pdf_figure_context(paper, fig_id)
@@ -401,6 +406,7 @@ class FigureParser:
                 figure_id=fig_id,
                 caption=caption,
                 in_text=in_text,
+                parse_warnings=parse_warnings,
             )
             if multimodal_figure is not None:
                 multimodal_figure = self._apply_paper_specific_overrides(paper, multimodal_figure)
@@ -412,11 +418,19 @@ class FigureParser:
                         multimodal_figure.methods_used, paper_level_methods
                     ),
                     "preview_url": preview_map.get(fig_id),
+                    "parse_warnings": _merge_ordered_unique(
+                        multimodal_figure.parse_warnings, parse_warnings
+                    ),
                 })
                 figures.append(multimodal_figure)
                 continue
             if paper.source == PaperSource.PDF:
-                stub = self._stub_figure(fig_id, caption=caption, in_text=in_text)
+                stub = self._stub_figure(
+                    fig_id,
+                    caption=caption,
+                    in_text=in_text,
+                    parse_warnings=parse_warnings,
+                )
                 stub = stub.model_copy(update={
                     "datasets_used": paper_level_datasets,
                     "methods_used": paper_level_methods,
@@ -498,14 +512,17 @@ class FigureParser:
         """
         if paper.source == PaperSource.PDF:
             caption, in_text = self._pdf_figure_context(paper, figure_id)
+            parse_warnings: list[str] = []
         else:
             caption = self._find_caption(paper, figure_id)
             in_text = self._find_in_text_references(paper, figure_id)
+            parse_warnings = []
         multimodal_figure = self._parse_figure_with_multimodal_pdf(
             paper=paper,
             figure_id=figure_id,
             caption=caption,
             in_text=in_text,
+            parse_warnings=parse_warnings,
         )
         if multimodal_figure is not None:
             figure = self._apply_paper_specific_overrides(paper, multimodal_figure)
@@ -524,9 +541,17 @@ class FigureParser:
                     figure.methods_used, paper_level_methods
                 ),
                 "preview_url": preview_map.get(figure_id),
+                "parse_warnings": _merge_ordered_unique(
+                    figure.parse_warnings, parse_warnings
+                ),
             })
         if paper.source == PaperSource.PDF:
-            return self._stub_figure(figure_id, caption=caption, in_text=in_text)
+            return self._stub_figure(
+                figure_id,
+                caption=caption,
+                in_text=in_text,
+                parse_warnings=parse_warnings,
+            )
 
         bioc_fig_passages, bioc_results_passages = self._get_bioc_context_for_figure(
             paper,
@@ -570,20 +595,35 @@ class FigureParser:
         figure_id: str,
         caption: str,
         in_text: list[str],
+        parse_warnings: Optional[list[str]] = None,
     ) -> Optional[Figure]:
         """Parse figure directly from PDF panel crops and caption context."""
+        parse_warnings = parse_warnings if parse_warnings is not None else []
         if paper.source != PaperSource.PDF:
             return None
         pdf_path = Path(paper.source_path)
         if not pdf_path.exists() or not pdf_path.is_file():
+            warning = "multimodal_pdf_unavailable:source_pdf_missing"
+            parse_warnings.append(warning)
+            logger.warning("Multimodal PDF figure extraction unavailable for %s: source PDF missing", figure_id)
             return None
 
-        panel_images = extract_figure_panel_images_from_pdf(
+        panel_images_result = extract_figure_panel_images_from_pdf(
             pdf_path,
             figure_id=figure_id,
             caption=caption,
+            return_diagnostics=True,
         )
+        if isinstance(panel_images_result, tuple):
+            panel_images, panel_diagnostics = panel_images_result
+        else:  # Backward-compatible for older call-sites/tests that return only panel bytes.
+            panel_images = panel_images_result
+            panel_diagnostics = []
+        parse_warnings.extend(f"multimodal_pdf_panel:{item}" for item in panel_diagnostics)
         if not panel_images:
+            warning = "multimodal_pdf_unavailable:no_panel_images_extracted"
+            parse_warnings.append(warning)
+            logger.warning("Multimodal PDF figure extraction unavailable for %s: no panel images extracted", figure_id)
             return None
 
         prompt = (
@@ -604,6 +644,11 @@ class FigureParser:
             )
         except Exception as exc:
             logger.warning("Multimodal PDF figure extraction failed for %s: %s", figure_id, exc)
+            if isinstance(exc, ValueError) and "Image at index" in str(exc) and "exceeds max size" in str(exc):
+                parse_warnings.append("multimodal_pdf_unavailable:image_size_limit_exceeded")
+            parse_warnings.append(
+                f"multimodal_pdf_unavailable:vision_extraction_failed:{exc.__class__.__name__}"
+            )
             return None
 
         subfigures = [_subfigure_from_meta(m) for m in extracted.subfigures]
@@ -623,6 +668,7 @@ class FigureParser:
             in_text_context=in_text,
             datasets_used=[d for d in extracted.datasets_used if isinstance(d, str) and d.strip()],
             methods_used=[m for m in extracted.methods_used if isinstance(m, str) and m.strip()],
+            parse_warnings=parse_warnings,
         )
 
     def _resolve_preview_urls(self, paper: Paper, figure_ids: list[str]) -> dict[str, str]:
@@ -1110,6 +1156,7 @@ class FigureParser:
         figure_id: str,
         caption: str = "",
         in_text: list[str] | None = None,
+        parse_warnings: list[str] | None = None,
     ) -> Figure:
         """Return a minimal Figure when parsing fails.
 
@@ -1122,6 +1169,7 @@ class FigureParser:
             caption=caption,
             purpose="Could not be parsed.",
             in_text_context=in_text or [],
+            parse_warnings=parse_warnings or [],
         )
 
 

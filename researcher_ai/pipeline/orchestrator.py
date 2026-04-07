@@ -144,15 +144,23 @@ class WorkflowOrchestrator:
                 break
         return state
 
+    def _require_state_keys(self, state: WorkflowState, keys: list[str], *, node: str) -> None:
+        missing = [k for k in keys if k not in state]
+        if missing:
+            raise KeyError(f"{node} missing required state keys: {', '.join(missing)}")
+
     def _node_parse_paper(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["source", "source_type"], node="parse_paper")
         paper = self.paper_parser.parse(state["source"], source_type=state["source_type"])
         return {"paper": paper, "progress": 15, "stage": "parsed_paper"}
 
     def _node_parse_figures(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["paper"], node="parse_figures")
         figures = self.figure_parser.parse_all_figures(state["paper"])
         return {"figures": figures, "progress": 35, "stage": "parsed_figures"}
 
     def _node_parse_methods(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["paper"], node="parse_methods")
         method = self.methods_parser.parse(
             state["paper"],
             figures=state.get("figures", []),
@@ -161,6 +169,7 @@ class WorkflowOrchestrator:
         return {"method": method, "progress": 55, "stage": "parsed_methods"}
 
     def _node_parse_datasets(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["paper", "method"], node="parse_datasets")
         paper = state["paper"]
         method = state["method"]
         figures = state.get("figures", [])
@@ -192,10 +201,12 @@ class WorkflowOrchestrator:
         }
 
     def _node_parse_software(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["method"], node="parse_software")
         software = self.software_parser.parse_from_method(state["method"])
         return {"software": software, "progress": 80, "stage": "parsed_software"}
 
     def _node_build_pipeline(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["method"], node="build_pipeline")
         attempts = int(state.get("build_attempts", 0)) + 1
         pipeline = self.pipeline_builder.build(
             state["method"],
