@@ -317,6 +317,27 @@ def _mock_software() -> list[Software]:
     ]
 
 
+@pytest.mark.snapshot
+def test_pipeline_spec_json_round_trip_from_snapshot_components():
+    """Methods output maps cleanly into Pipeline JSON schema for downstream generators."""
+    builder = PipelineBuilder()
+    pipeline = builder.build(
+        method=_mock_method(),
+        datasets=_mock_datasets(),
+        software=_mock_software(),
+        figures=_mock_figures(),
+        backend=PipelineBackend.SNAKEMAKE,
+    )
+
+    raw_json = pipeline.model_dump_json()
+    restored = Pipeline.model_validate_json(raw_json)
+
+    assert restored.config.name
+    assert restored.config.backend == PipelineBackend.SNAKEMAKE
+    assert len(restored.config.steps) >= 1
+    assert all(step.step_id and step.command for step in restored.config.steps)
+
+
 # ---------------------------------------------------------------------------
 # Tier 2: Snapshot integration tests
 # ---------------------------------------------------------------------------
@@ -820,6 +841,23 @@ class TestLiveIntegrationECLIP:
         )
         assert outcome != ReproducibilityOutcome.FAILED, \
             f"Pipeline failed for PMID {self.PMID}: outcome={outcome}"
+
+
+@pytest.mark.live
+class TestLiveIntegrationYeoPublicationSmoke:
+    """Live smoke test for a PMID selected from yeolab.com/publications."""
+
+    PMID = "35703436"  # Sentinel Cards Provide Practical SARS-CoV-2 Monitoring...
+
+    def test_live_paper_parser_handles_selected_yeolab_pmid(self):
+        cache = Path("tests/snapshots")
+        parser = PaperParser(cache_dir=cache)
+        paper = parser.parse(self.PMID)
+
+        assert paper is not None
+        assert paper.pmid == self.PMID
+        assert paper.title
+        assert len(paper.sections) >= 1
 
 
 # ---------------------------------------------------------------------------

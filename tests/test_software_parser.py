@@ -1038,3 +1038,46 @@ class TestSoftwareExtractionSnapshot:
             restored = Software.model_validate_json(sw.model_dump_json())
             assert restored.name == sw.name
             assert restored.version == sw.version
+
+
+class TestVersionNormalization:
+    def test_normalize_version_accepts_semver_with_suffixes(self):
+        parser = _make_parser()
+        assert parser._normalize_version("v2.7.3a") == "2.7.3a"
+        assert parser._normalize_version("1.9.dev1") == "1.9.dev1"
+        assert parser._normalize_version("2.2.7.1") == "2.2.7.1"
+
+    @pytest.mark.parametrize("bad", ["latest", "default", "unknown", "version TBD", "release candidate"])
+    def test_normalize_version_rejects_non_version_text(self, bad):
+        parser = _make_parser()
+        assert parser._normalize_version(bad) is None
+
+    def test_parse_from_method_drops_non_version_tokens(self):
+        parser = _make_parser()
+        method = Method(
+            assay_graph=AssayGraph(
+                assays=[
+                    Assay(
+                        name="RNA-seq",
+                        description="desc",
+                        data_type="sequencing",
+                        steps=[
+                            AnalysisStep(
+                                step_number=1,
+                                description="align reads",
+                                input_data="reads.fastq",
+                                output_data="aligned.bam",
+                                software="STAR",
+                                software_version="latest",
+                                parameters={},
+                            )
+                        ],
+                    )
+                ],
+                dependencies=[],
+            )
+        )
+        tools = parser.parse_from_method(method)
+        assert len(tools) == 1
+        assert tools[0].name == "STAR"
+        assert tools[0].version is None

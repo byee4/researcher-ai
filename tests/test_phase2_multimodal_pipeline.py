@@ -190,6 +190,36 @@ def test_pdf_multimodal_fallback_records_warning_on_vision_error(tmp_path: Path)
     assert any("vision_extraction_failed:RuntimeError" in warning for warning in figure.parse_warnings)
 
 
+def test_pdf_multimodal_fallback_records_warning_on_rate_limit(tmp_path: Path):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%dummy")
+    paper = Paper(
+        title="Fallback PDF",
+        source=PaperSource.PDF,
+        source_path=str(pdf_path),
+        paper_type=PaperType.EXPERIMENTAL,
+        sections=[],
+        figure_ids=["Figure 1"],
+        figure_captions={"Figure 1": "Figure 1. Panel A and B."},
+    )
+    parser = FigureParser(llm_model="test-model", vision_model="gemini-3.1-pro")
+
+    class _RateLimitError(RuntimeError):
+        pass
+
+    with patch(
+        "researcher_ai.parsers.figure_parser.extract_figure_panel_images_from_pdf",
+        return_value=([b"img"], []),
+    ), patch(
+        "researcher_ai.parsers.figure_parser._extract_structured_data",
+        side_effect=_RateLimitError("rate limit exceeded"),
+    ):
+        figure = parser.parse_figure(paper, "Figure 1")
+
+    assert figure.purpose == "Could not be parsed."
+    assert any("vision_extraction_failed:_RateLimitError" in warning for warning in figure.parse_warnings)
+
+
 def test_marker_fallback_logs_warning_and_returns_plain_text(tmp_path: Path, caplog):
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n%dummy")

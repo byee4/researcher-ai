@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -38,6 +39,19 @@ from researcher_ai.utils import llm as llm_utils
 from researcher_ai.utils.llm import extract_structured_data, SYSTEM_METHODS_PARSER
 
 logger = logging.getLogger(__name__)
+
+_PLACEHOLDER_VERSION_TOKENS = {
+    "na",
+    "n/a",
+    "none",
+    "unknown",
+    "latest",
+    "current",
+    "default",
+    "unspecified",
+    "not specified",
+}
+_VERSION_PATTERN = re.compile(r"^(?:v)?\d+(?:[._-][0-9A-Za-z]+)*(?:\+[0-9A-Za-z.-]+)?$")
 
 # Deprecated compatibility alias for legacy tests/mocks.
 ask_claude_structured = extract_structured_data
@@ -501,7 +515,9 @@ class SoftwareParser:
             for step in assay.steps:
                 if step.software:
                     ctx = f"{step.description} {step.input_data} → {step.output_data}"
-                    mentions.append((step.software, step.software_version, ctx, step))
+                    mentions.append(
+                        (step.software, self._normalize_version(step.software_version), ctx, step)
+                    )
 
         return self._resolve_mentions(mentions)  # type: ignore[arg-type]
 
@@ -521,7 +537,7 @@ class SoftwareParser:
 
         mentions_raw = self._extract_mentions_from_text(methods_text)
         mentions = [
-            (m.name, m.version, m.context or "", None)
+            (m.name, self._normalize_version(m.version), m.context or "", None)
             for m in mentions_raw
         ]
         tools = self._resolve_mentions(mentions)
@@ -578,6 +594,27 @@ class SoftwareParser:
         import re as _re
         return _re.sub(r"[\s\-_]+", "", name).lower()
 
+    @staticmethod
+    def _normalize_version(version: Optional[str]) -> Optional[str]:
+        """Return a normalized version string, or None for non-version text."""
+        if version is None:
+            return None
+        cleaned = str(version).strip()
+        if not cleaned:
+            return None
+        cleaned = cleaned.strip("()[]{}.,;:")
+        lowered = cleaned.lower()
+        if lowered.startswith("version "):
+            cleaned = cleaned[8:].strip()
+            lowered = cleaned.lower()
+        if lowered in _PLACEHOLDER_VERSION_TOKENS:
+            return None
+        if cleaned.lower().startswith("v") and len(cleaned) > 1 and cleaned[1].isdigit():
+            cleaned = cleaned[1:]
+        if _VERSION_PATTERN.fullmatch(cleaned):
+            return cleaned
+        return None
+
     def _resolve_mentions(
         self,
         mentions: list[tuple[str, Optional[str], str, Optional[object]]],
@@ -591,6 +628,7 @@ class SoftwareParser:
         # canonical_key → (original_name, version, context, step)
         deduped: dict[str, tuple[str, Optional[str], str, Optional[object]]] = {}
         for name, version, context, step in mentions:
+            version = self._normalize_version(version)
             key = self._canonical_tool_name(name)
             if key not in deduped or (version and not deduped[key][1]):
                 deduped[key] = (name, version, context, step)
