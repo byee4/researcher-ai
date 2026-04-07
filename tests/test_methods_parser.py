@@ -1180,6 +1180,63 @@ class TestParse:
         assert any("inferred_parameters_fallback_mode" in w for w in method.parse_warnings)
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_parse_rag_integration_with_real_protocol_store(self, mock_llm, tmp_path):
+        docs_dir = tmp_path / "protocols"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        (docs_dir / "star.md").write_text(
+            "STAR alignment commonly sets runThreadN and genomeDir.",
+            encoding="utf-8",
+        )
+        parser = _make_parser()
+        parser.protocol_rag = ProtocolRAGStore(
+            docs_dir=docs_dir,
+            persist_dir=tmp_path / "rag",
+        )
+
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayList:
+                return _AssayList(assay_names=["Read mapping"])
+            if output_schema is _AssayClassificationList:
+                return _AssayClassificationList(
+                    assays=[_AssayCategoryItem(name="Read mapping", method_category="computational")]
+                )
+            if output_schema is _AssayMeta:
+                return _make_assay_meta(
+                    name="Read mapping",
+                    steps=[_make_step_meta(1, description="Align reads", software="STAR", software_version=None, parameters={})],
+                )
+            if output_schema is _DependencyList:
+                return _DependencyList(dependencies=[])
+            if output_schema is _AvailabilityStatement:
+                return _AvailabilityStatement(data_statement="", code_statement="")
+            return MagicMock()
+
+        mock_llm.side_effect = side_effect
+
+        def fake_tool_loop(**kwargs):
+            handler = kwargs["tool_handlers"]["search_protocol_docs"]
+            retrieved = handler({"query": "Read mapping STAR parameters", "top_k": 1})
+            assert "runThreadN" in retrieved
+            return _StepParameterInferenceList(
+                updates=[
+                    _StepParameterInference(
+                        step_number=1,
+                        inferred_parameters={"runThreadN": "8", "genomeDir": "/ref/hg38"},
+                    )
+                ]
+            )
+
+        with patch(
+            "researcher_ai.parsers.methods_parser._extract_structured_data_with_tools",
+            side_effect=fake_tool_loop,
+        ):
+            method = parser.parse(SAMPLE_PAPER, computational_only=True)
+
+        step = method.assays[0].steps[0]
+        assert step.parameters.get("runThreadN") == "8"
+        assert step.parameters.get("genomeDir") == "/ref/hg38"
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_json_roundtrip(self, mock_llm):
         mock_llm.side_effect = lambda prompt, output_schema, **kw: self._mock_llm(prompt, output_schema)
         parser = _make_parser()

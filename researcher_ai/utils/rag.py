@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -9,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+_DEFAULT_RAG_STORE: Optional["ProtocolRAGStore"] = None
 
 
 def _default_docs_dir() -> Path:
@@ -34,6 +37,7 @@ def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> list[st
     if len(clean) <= chunk_size:
         return [clean]
     chunks: list[str] = []
+    advance = max(chunk_size - overlap, max(1, chunk_size // 4))
     i = 0
     n = len(clean)
     while i < n:
@@ -41,7 +45,7 @@ def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> list[st
         chunks.append(clean[i:j])
         if j >= n:
             break
-        i = max(i + 1, j - overlap)
+        i += advance
     return chunks
 
 
@@ -91,16 +95,18 @@ class ProtocolRAGStore:
             ids = [f"doc-{i}" for i in range(len(self._chunks))]
             docs = [c.text for c in self._chunks]
             metas = [{"source": c.source} for c in self._chunks]
-            # Keep add simple; duplicate ids can raise on repeat runs, so reset collection.
-            try:
-                existing = col.get(include=[])
-                existing_ids = existing.get("ids", []) if isinstance(existing, dict) else []
-                if existing_ids:
-                    col.delete(ids=existing_ids)
-            except Exception:
-                pass
-            embeddings = self._embedder.encode(docs).tolist()
-            col.add(ids=ids, documents=docs, metadatas=metas, embeddings=embeddings)
+            signature = self._compute_index_signature()
+            if self._should_reindex(col=col, signature=signature):
+                try:
+                    existing = col.get(include=[])
+                    existing_ids = existing.get("ids", []) if isinstance(existing, dict) else []
+                    if existing_ids:
+                        col.delete(ids=existing_ids)
+                except Exception:
+                    pass
+                embeddings = self._embedder.encode(docs).tolist()
+                col.add(ids=ids, documents=docs, metadatas=metas, embeddings=embeddings)
+                self._write_index_signature(signature)
             self._chroma = col
         except Exception as exc:
             logger.info("RAG vector backend unavailable, using lexical retrieval fallback: %s", exc)
@@ -120,6 +126,57 @@ class ProtocolRAGStore:
             ):
                 chunks.append(_Chunk(source=path.name, text=chunk))
         return chunks
+
+    def _index_meta_path(self) -> Path:
+        return self.persist_dir / f"{self.collection_name}.index_meta.json"
+
+    def _compute_index_signature(self) -> str:
+        payload = {
+            "embedding_model": self.embedding_model,
+            "chunk_size": self.chunk_size,
+            "chunk_overlap": self.chunk_overlap,
+            "docs": [],
+        }
+        for path in sorted(self.docs_dir.glob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            payload["docs"].append(
+                {
+                    "name": path.name,
+                    "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                }
+            )
+        raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def _read_index_signature(self) -> Optional[str]:
+        meta_path = self._index_meta_path()
+        if not meta_path.exists():
+            return None
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            sig = data.get("signature")
+            return str(sig) if isinstance(sig, str) else None
+        except Exception:
+            return None
+
+    def _write_index_signature(self, signature: str) -> None:
+        self.persist_dir.mkdir(parents=True, exist_ok=True)
+        meta_path = self._index_meta_path()
+        meta_path.write_text(
+            json.dumps({"signature": signature}, indent=2),
+            encoding="utf-8",
+        )
+
+    def _should_reindex(self, *, col, signature: str) -> bool:
+        existing_signature = self._read_index_signature()
+        if existing_signature != signature:
+            return True
+        try:
+            existing = col.get(include=[])
+            existing_ids = existing.get("ids", []) if isinstance(existing, dict) else []
+            return len(existing_ids) != len(self._chunks)
+        except Exception:
+            return True
 
     def query(self, query: str, top_k: int = 3) -> list[dict[str, str]]:
         if top_k <= 0:
@@ -155,7 +212,7 @@ def search_protocol_docs(
     store: Optional[ProtocolRAGStore] = None,
 ) -> str:
     """Tool-facing retrieval function returning the top protocol chunks as text."""
-    rag = store or ProtocolRAGStore()
+    rag = store or _get_default_rag_store()
     hits = rag.query(query, top_k=top_k)
     if not hits:
         return "No protocol documents matched the query."
@@ -163,3 +220,10 @@ def search_protocol_docs(
     for i, h in enumerate(hits, start=1):
         lines.append(f"[{i}] source={h['source']}\n{h['text']}")
     return "\n\n".join(lines)
+
+
+def _get_default_rag_store() -> ProtocolRAGStore:
+    global _DEFAULT_RAG_STORE
+    if _DEFAULT_RAG_STORE is None:
+        _DEFAULT_RAG_STORE = ProtocolRAGStore()
+    return _DEFAULT_RAG_STORE
