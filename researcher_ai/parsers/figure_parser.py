@@ -604,11 +604,18 @@ class FigureParser:
             logger.warning("Multimodal PDF figure extraction unavailable for %s: source PDF missing", figure_id)
             return None
 
-        panel_images = extract_figure_panel_images_from_pdf(
+        panel_images_result = extract_figure_panel_images_from_pdf(
             pdf_path,
             figure_id=figure_id,
             caption=caption,
+            return_diagnostics=True,
         )
+        if isinstance(panel_images_result, tuple):
+            panel_images, panel_diagnostics = panel_images_result
+        else:  # Backward-compatible for older call-sites/tests that return only panel bytes.
+            panel_images = panel_images_result
+            panel_diagnostics = []
+        parse_warnings.extend(f"multimodal_pdf_panel:{item}" for item in panel_diagnostics)
         if not panel_images:
             warning = "multimodal_pdf_unavailable:no_panel_images_extracted"
             parse_warnings.append(warning)
@@ -633,6 +640,8 @@ class FigureParser:
             )
         except Exception as exc:
             logger.warning("Multimodal PDF figure extraction failed for %s: %s", figure_id, exc)
+            if isinstance(exc, ValueError) and "Image at index" in str(exc) and "exceeds max size" in str(exc):
+                parse_warnings.append("multimodal_pdf_unavailable:image_size_limit_exceeded")
             parse_warnings.append(
                 f"multimodal_pdf_unavailable:vision_extraction_failed:{exc.__class__.__name__}"
             )

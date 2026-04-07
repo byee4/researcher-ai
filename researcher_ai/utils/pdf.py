@@ -6,6 +6,8 @@ than PyPDF2) and Pillow for image I/O.
 
 from __future__ import annotations
 
+from collections import deque
+import os
 import logging
 import re
 import io
@@ -192,69 +194,304 @@ def extract_figure_panel_images_from_pdf(
     caption: str = "",
     dpi: int = 180,
     max_panels: int = 8,
-) -> list[bytes]:
+    return_diagnostics: bool = False,
+    max_image_bytes: Optional[int] = None,
+) -> list[bytes] | tuple[list[bytes], list[str]]:
     """Extract figure panel crops as PNG bytes for multimodal LLM calls.
 
-    Heuristic strategy:
-    1. Find first page whose text mentions the figure id.
-    2. Rasterize page.
-    3. Split into an approximate grid based on panel count inferred from caption.
+    Strategy:
+    1. Find all pages mentioning the figure id (handles multi-page figures).
+    2. Rasterize each candidate page.
+    3. Try connected-components panel detection first.
+    4. Fall back to a caption-informed grid split when detection is ambiguous.
+    5. Enforce per-panel byte cap via adaptive resize/quantize before returning.
     """
     _require_pdfplumber()
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
+    diagnostics: list[str] = []
+    max_image_bytes = max_image_bytes or int(os.environ.get("RESEARCHER_AI_MAX_IMAGE_BYTES", 5 * 1024 * 1024))
+
     fig_num_match = re.search(r"(?i)(?:fig(?:ure)?\.?\s*)(\d+)", figure_id or "")
     if not fig_num_match:
-        return []
+        diagnostics.append("figure_id_unparseable")
+        return ([], diagnostics) if return_diagnostics else []
     fig_num = fig_num_match.group(1)
     fig_pat = re.compile(rf"(?i)\bfig(?:ure)?\.?\s*{re.escape(fig_num)}[A-Za-z]?\b")
 
-    page_index: Optional[int] = None
+    panel_count = _estimate_panel_count_from_caption(caption)
+    panel_count = max(1, min(panel_count, max_panels))
+
+    page_indices: list[int] = []
+    page_images: list = []
     with pdfplumber.open(pdf_path) as pdf:
         for idx, page in enumerate(pdf.pages):
             text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
             if fig_pat.search(text):
-                page_index = idx
-                break
-        if page_index is None:
-            return []
+                page_indices.append(idx)
+        if not page_indices:
+            diagnostics.append("figure_page_not_found")
+            return ([], diagnostics) if return_diagnostics else []
 
-        page = pdf.pages[page_index]
-        pil_img = page.to_image(resolution=dpi).original.convert("RGB")
+        for page_index in page_indices:
+            page = pdf.pages[page_index]
+            page_images.append(page.to_image(resolution=dpi).original.convert("RGB"))
 
-    panel_count = _estimate_panel_count_from_caption(caption)
-    panel_count = max(1, min(panel_count, max_panels))
-    if panel_count == 1:
-        return [_image_to_png_bytes(pil_img)]
-
-    cols = math.ceil(math.sqrt(panel_count))
-    rows = math.ceil(panel_count / cols)
-    w, h = pil_img.size
     panel_images: list[bytes] = []
-    for r in range(rows):
-        for c in range(cols):
-            if len(panel_images) >= panel_count:
-                break
-            x0 = int((c / cols) * w)
-            x1 = int(((c + 1) / cols) * w)
-            y0 = int((r / rows) * h)
-            y1 = int(((r + 1) / rows) * h)
-            crop = pil_img.crop((x0, y0, x1, y1))
-            panel_images.append(_image_to_png_bytes(crop))
+    for page_image in page_images:
+        remaining = max(1, panel_count - len(panel_images))
+        page_panels, page_diagnostics = _extract_panels_from_page_image(
+            page_image,
+            panel_count=remaining,
+            max_panels=max_panels,
+            max_image_bytes=max_image_bytes,
+        )
+        panel_images.extend(page_panels)
+        diagnostics.extend(page_diagnostics)
+        if len(panel_images) >= panel_count:
+            break
+
+    if not panel_images:
+        diagnostics.append("no_panel_images_extracted")
+        return ([], _dedupe_preserve_order(diagnostics)) if return_diagnostics else []
+
+    panel_images = panel_images[:max_panels]
+    deduped_diagnostics = _dedupe_preserve_order(diagnostics)
+    if return_diagnostics:
+        return panel_images, deduped_diagnostics
     return panel_images
 
 
 def _estimate_panel_count_from_caption(caption: str) -> int:
-    labels = {m.group(1).lower() for m in re.finditer(r"\(([a-h])\)", caption or "", re.IGNORECASE)}
-    return max(1, len(labels))
+    text = caption or ""
+    labels: set[str] = set()
+
+    # Parenthesized single-letter labels, e.g. (a), (B), (a1), (b2)
+    for match in re.finditer(r"\(([a-zA-Z])(?:\d+)?\)", text):
+        labels.add(match.group(1).lower())
+    # Bare single-letter labels followed by punctuation or whitespace, e.g. "A.", "b:"
+    for match in re.finditer(r"(?<![A-Za-z0-9])([A-Ha-h])(?:[.)\]:]|\s)", text):
+        labels.add(match.group(1).lower())
+    # Numeric labels, e.g. (1), 2), 3.
+    numeric_labels = {
+        int(match.group(1))
+        for match in re.finditer(r"(?<!\d)\(?([1-9])\)?(?:[.)\]:]|\s)", text)
+    }
+
+    letter_count = len(labels)
+    numeric_count = len(numeric_labels)
+    inferred = max(letter_count, numeric_count, 1)
+    return inferred
 
 
 def _image_to_png_bytes(image) -> bytes:
     buf = io.BytesIO()
-    image.save(buf, format="PNG")
+    image.save(buf, format="PNG", optimize=True, compress_level=9)
     return buf.getvalue()
+
+
+def _extract_panels_from_page_image(
+    image,
+    *,
+    panel_count: int,
+    max_panels: int,
+    max_image_bytes: int,
+) -> tuple[list[bytes], list[str]]:
+    diagnostics: list[str] = []
+
+    boxes = _detect_panel_boxes_from_image(image, expected_count=panel_count)
+    if len(boxes) >= 2:
+        diagnostics.append("panel_detection_connected_components")
+    else:
+        boxes = _grid_boxes(image.size[0], image.size[1], panel_count)
+        diagnostics.append("panel_detection_grid_fallback")
+
+    boxes = boxes[:max(1, min(max_panels, panel_count))]
+    panels: list[bytes] = []
+    for box in boxes:
+        crop = image.crop(box)
+        panel_bytes, panel_diag = _image_to_png_bytes_with_limit(crop, max_image_bytes=max_image_bytes)
+        panels.append(panel_bytes)
+        diagnostics.extend(panel_diag)
+    return panels, diagnostics
+
+
+def _detect_panel_boxes_from_image(image, *, expected_count: int) -> list[tuple[int, int, int, int]]:
+    """Find likely panel boxes using connected components on a binarized thumbnail."""
+    try:
+        from PIL import ImageFilter  # type: ignore[import]
+    except ImportError:
+        return []
+
+    orig_w, orig_h = image.size
+    max_dim = max(orig_w, orig_h)
+    scale = max(1.0, max_dim / 900.0)
+    work_w = max(64, int(orig_w / scale))
+    work_h = max(64, int(orig_h / scale))
+
+    gray = image.convert("L").resize((work_w, work_h))
+    binary = gray.point(lambda p: 255 if p < 245 else 0, mode="L")
+    binary = binary.filter(ImageFilter.MaxFilter(size=7))
+    binary = binary.filter(ImageFilter.MinFilter(size=3))
+
+    pixels = binary.load()
+    visited = bytearray(work_w * work_h)
+
+    min_area = max(200, int(work_w * work_h * 0.008))
+    min_w = max(20, int(work_w * 0.08))
+    min_h = max(20, int(work_h * 0.08))
+
+    components: list[tuple[int, int, int, int, int]] = []
+    for y in range(work_h):
+        for x in range(work_w):
+            idx = y * work_w + x
+            if visited[idx] or pixels[x, y] == 0:
+                continue
+            visited[idx] = 1
+            queue: deque[tuple[int, int]] = deque([(x, y)])
+            min_x = max_x = x
+            min_y = max_y = y
+            area = 0
+            while queue:
+                cx, cy = queue.popleft()
+                area += 1
+                if cx < min_x:
+                    min_x = cx
+                if cx > max_x:
+                    max_x = cx
+                if cy < min_y:
+                    min_y = cy
+                if cy > max_y:
+                    max_y = cy
+                for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                    if nx < 0 or ny < 0 or nx >= work_w or ny >= work_h:
+                        continue
+                    n_idx = ny * work_w + nx
+                    if visited[n_idx] or pixels[nx, ny] == 0:
+                        continue
+                    visited[n_idx] = 1
+                    queue.append((nx, ny))
+            width = max_x - min_x + 1
+            height = max_y - min_y + 1
+            if area < min_area or width < min_w or height < min_h:
+                continue
+            components.append((min_x, min_y, max_x, max_y, area))
+
+    if len(components) < 2:
+        return []
+
+    components.sort(key=lambda item: item[4], reverse=True)
+    cap = min(len(components), max(2, expected_count * 2))
+    selected = components[:cap]
+
+    scale_x = orig_w / work_w
+    scale_y = orig_h / work_h
+    boxes: list[tuple[int, int, int, int]] = []
+    for x0, y0, x1, y1, _ in selected:
+        pad_x = max(2, int((x1 - x0 + 1) * 0.02))
+        pad_y = max(2, int((y1 - y0 + 1) * 0.02))
+        ox0 = max(0, int((x0 - pad_x) * scale_x))
+        oy0 = max(0, int((y0 - pad_y) * scale_y))
+        ox1 = min(orig_w, int((x1 + pad_x + 1) * scale_x))
+        oy1 = min(orig_h, int((y1 + pad_y + 1) * scale_y))
+        if ox1 - ox0 < 8 or oy1 - oy0 < 8:
+            continue
+        boxes.append((ox0, oy0, ox1, oy1))
+
+    boxes = _remove_near_duplicate_boxes(boxes)
+    boxes.sort(key=lambda box: (box[1], box[0]))
+    return boxes
+
+
+def _remove_near_duplicate_boxes(
+    boxes: list[tuple[int, int, int, int]],
+) -> list[tuple[int, int, int, int]]:
+    deduped: list[tuple[int, int, int, int]] = []
+    for box in boxes:
+        if any(_iou(box, existing) > 0.85 for existing in deduped):
+            continue
+        deduped.append(box)
+    return deduped
+
+
+def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    inter_x0 = max(ax0, bx0)
+    inter_y0 = max(ay0, by0)
+    inter_x1 = min(ax1, bx1)
+    inter_y1 = min(ay1, by1)
+    if inter_x1 <= inter_x0 or inter_y1 <= inter_y0:
+        return 0.0
+    inter_area = (inter_x1 - inter_x0) * (inter_y1 - inter_y0)
+    area_a = max(1, (ax1 - ax0) * (ay1 - ay0))
+    area_b = max(1, (bx1 - bx0) * (by1 - by0))
+    return inter_area / float(area_a + area_b - inter_area)
+
+
+def _grid_boxes(width: int, height: int, panel_count: int) -> list[tuple[int, int, int, int]]:
+    cols = math.ceil(math.sqrt(panel_count))
+    rows = math.ceil(panel_count / cols)
+    boxes: list[tuple[int, int, int, int]] = []
+    for r in range(rows):
+        for c in range(cols):
+            if len(boxes) >= panel_count:
+                break
+            x0 = int((c / cols) * width)
+            x1 = int(((c + 1) / cols) * width)
+            y0 = int((r / rows) * height)
+            y1 = int(((r + 1) / rows) * height)
+            boxes.append((x0, y0, x1, y1))
+    return boxes
+
+
+def _image_to_png_bytes_with_limit(image, *, max_image_bytes: int) -> tuple[bytes, list[str]]:
+    from PIL import Image  # type: ignore[import]
+
+    diagnostics: list[str] = []
+
+    encoded = _image_to_png_bytes(image)
+    if len(encoded) <= max_image_bytes:
+        return encoded, diagnostics
+
+    diagnostics.append("panel_resize_applied")
+    candidate = image
+    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+    adaptive_palette = getattr(getattr(Image, "Palette", Image), "ADAPTIVE", Image.ADAPTIVE)
+    for _ in range(12):
+        encoded = _image_to_png_bytes(candidate)
+        if len(encoded) <= max_image_bytes:
+            return encoded, diagnostics
+
+        for n_colors in (128, 64, 32, 16, 8):
+            quantized = candidate.convert("P", palette=adaptive_palette, colors=n_colors).convert("RGB")
+            quantized_encoded = _image_to_png_bytes(quantized)
+            if len(quantized_encoded) <= max_image_bytes:
+                diagnostics.append("panel_quantization_applied")
+                return quantized_encoded, diagnostics
+
+        next_w = max(32, int(candidate.size[0] * 0.75))
+        next_h = max(32, int(candidate.size[1] * 0.75))
+        if (next_w, next_h) == candidate.size:
+            break
+        candidate = candidate.resize((next_w, next_h), resample=resample)
+
+    diagnostics.append("panel_still_over_limit")
+    emergency = candidate.resize((32, 32), resample=resample)
+    return _image_to_png_bytes(emergency), diagnostics
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
 
 
 # ── Section detection helpers (regex-based, no LLM) ──────────────────────────
