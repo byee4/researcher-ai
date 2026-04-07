@@ -18,7 +18,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from researcher_ai.models.paper import BioCPassageContext
 
@@ -299,6 +299,14 @@ class PanelBoundingBox(BaseModel):
     coordinate_space: str = "normalized"
     detection_method: str = "layout_heuristic"
 
+    @model_validator(mode="after")
+    def _validate_box_bounds(self) -> "PanelBoundingBox":
+        if self.x0 >= self.x1:
+            raise ValueError("PanelBoundingBox requires x0 < x1")
+        if self.y0 >= self.y1:
+            raise ValueError("PanelBoundingBox requires y0 < y1")
+        return self
+
 
 # ── SubFigure ─────────────────────────────────────────────────────────────────
 
@@ -486,4 +494,11 @@ class Figure(BaseModel):
     preview_url: Optional[str] = Field(
         default=None,
         description="Direct HTTPS URL to the primary figure image when resolvable from PMC.",
+    )
+    parse_warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Machine-readable parse degradation warnings. "
+            "Empty list means no known fallbacks were triggered."
+        ),
     )

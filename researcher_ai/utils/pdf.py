@@ -86,7 +86,7 @@ def extract_markdown_from_pdf_with_marker(pdf_path: str | Path) -> str:
         if isinstance(markdown, str) and markdown.strip():
             return markdown
     except Exception as exc:
-        logger.info("marker-pdf Markdown extraction unavailable/failed: %s", exc)
+        logger.warning("marker-pdf Markdown extraction unavailable/failed; falling back to plain text: %s", exc)
 
     return extract_text_from_pdf(pdf_path)
 
