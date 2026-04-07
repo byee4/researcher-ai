@@ -6,7 +6,7 @@ This document consolidates prior architecture/evaluation/calibration/improvement
 
 Merged source sets:
 - Architecture/evaluation/calibration plans: `EVALUATION_ARCHITECTURE.md`, `EVALUATION_PHASE_1.md` ... `EVALUATION_PHASE_8.md`, `BIOC_INTEGRATION_PLAN.md`, `FIGURE_PARSER_CALIBRATION.md`, `FIGURE_PARSER_IMPROVEMENT_PLAN.md`, `ROADMAP.md`
-- Code validation anchors: `researcher_ai/parsers/*`, `researcher_ai/pipeline/*`, `researcher_ai/models/*`, `scripts/django_run_workflow.py`, `tests/*`
+- Code validation anchors: `researcher_ai/parsers/*`, `researcher_ai/pipeline/*`, `researcher_ai/models/*`, `scripts/run_workflow.py`, `tests/*`
 
 ## System Overview
 
@@ -64,7 +64,7 @@ Main flow:
 ## Operational Entry Points
 
 - Library usage in notebooks (`notebooks/*`).
-- Django integration runner: `scripts/django_run_workflow.py`.
+- Workflow runner script: `scripts/run_workflow.py`.
   - Emits staged progress.
   - Parses paper → figures → method → datasets → software → pipeline.
   - Serializes one JSON result payload.

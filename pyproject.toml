@@ -17,6 +17,7 @@ dependencies = [
     "PyYAML",
     "anthropic",
     "openai",
+    "litellm",
     "langgraph",
     "chromadb",
     "sentence-transformers",

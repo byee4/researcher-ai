@@ -53,7 +53,7 @@ Pipeline sequence:
 
 ```bash
 cd /Users/brianyee/Documents/work/01_active/researcher-ai/researcher-ai
-python scripts/django_run_workflow.py \
+python scripts/run_workflow.py \
   --source 26971820 \
   --source-type pmid \
   --output /tmp/researcher_ai_run.json
@@ -92,6 +92,5 @@ Output index:
 
 ## Accuracy Notes (Compared to Older Tutorial Docs)
 
-- Current package install target is `./researcher-ai`; Django `manage.py` lives in `./researcher-ai-portal`.
-- End-to-end orchestration script path is `researcher-ai/scripts/django_run_workflow.py`.
-- Older tutorial steps that `cd` into `researcher_ai` for Django commands are outdated for current layout.
+- Current package install target is `./researcher-ai`.
+- End-to-end orchestration script path is `researcher-ai/scripts/run_workflow.py`.
