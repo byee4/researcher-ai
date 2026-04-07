@@ -60,3 +60,11 @@ python -m sphinx -b html docs docs/_build/html
 ```
 
 When adding public functions/classes, ensure docstrings are present so API docs remain complete.
+
+## Architecture planning authority
+
+- Current implemented architecture: `docs/ARCHITECTURE.md`
+- Canonical IR-first planning roadmap: `docs/WORKFLOW_GRAPH_IR_PLAN.md`
+- Deprecated architecture planning artifacts:
+  `docs/previous/development/architecture/V2_ARCHITECTURE_PLAN.md` and
+  `docs/previous/development/architecture/researcher-ai_architecture_review.md`

@@ -26,6 +26,17 @@ from researcher_ai.models import (
     Command, Environment, LicenseType, Software,
     # pipeline
     Pipeline, PipelineBackend, PipelineConfig, PipelineStep,
+    # workflow graph
+    ExecutionBackend,
+    GraphEdge,
+    GraphNode,
+    GraphPort,
+    GraphValidationIssue,
+    NodeKind,
+    PortDirection,
+    PortType,
+    ValidationSeverity,
+    WorkflowGraph,
 )
 
 
@@ -531,6 +542,151 @@ class TestPipeline:
             conda_env_yaml="name: env\ndeps:\n  - star",
         )
         assert roundtrip(p) == p
+
+
+# ── WorkflowGraph models ─────────────────────────────────────────────────────
+
+class TestWorkflowGraphModels:
+    def _minimal_graph(self) -> WorkflowGraph:
+        src = GraphNode(
+            node_id="source_fastq",
+            kind=NodeKind.source,
+            label="Source FASTQ",
+            ports=[
+                GraphPort(
+                    port_id="out_fastq",
+                    name="FASTQ output",
+                    direction=PortDirection.output,
+                    port_type=PortType.fastq,
+                )
+            ],
+        )
+        align = GraphNode(
+            node_id="align_reads",
+            kind=NodeKind.analysis,
+            label="Align Reads",
+            tool_name="STAR",
+            command_template="STAR --readFilesIn {r1} {r2}",
+            ports=[
+                GraphPort(
+                    port_id="in_fastq",
+                    name="FASTQ input",
+                    direction=PortDirection.input,
+                    port_type=PortType.fastq,
+                ),
+                GraphPort(
+                    port_id="out_bam",
+                    name="BAM output",
+                    direction=PortDirection.output,
+                    port_type=PortType.bam,
+                ),
+            ],
+        )
+        edge = GraphEdge(
+            edge_id="e1",
+            from_node_id="source_fastq",
+            from_port_id="out_fastq",
+            to_node_id="align_reads",
+            to_port_id="in_fastq",
+        )
+        return WorkflowGraph(
+            graph_id="g1",
+            name="test graph",
+            nodes=[src, align],
+            edges=[edge],
+            targets=["aligned_bam"],
+            provenance={"paper_id": "PMID:123"},
+        )
+
+    def test_minimal_graph_valid(self):
+        graph = self._minimal_graph()
+        assert graph.is_valid() is True
+        assert graph.validation_issues() == []
+
+    def test_roundtrip(self):
+        graph = self._minimal_graph()
+        assert roundtrip(graph) == graph
+
+    def test_required_input_missing(self):
+        graph = self._minimal_graph()
+        graph.edges = []
+        issues = graph.validate_required_inputs_satisfied()
+        assert any(i.code == "missing_required_input" for i in issues)
+
+    def test_cycle_detected(self):
+        a = GraphNode(
+            node_id="a",
+            kind=NodeKind.analysis,
+            label="A",
+            ports=[
+                GraphPort(port_id="in", name="in", direction=PortDirection.input, port_type=PortType.generic),
+                GraphPort(port_id="out", name="out", direction=PortDirection.output, port_type=PortType.generic),
+            ],
+        )
+        b = GraphNode(
+            node_id="b",
+            kind=NodeKind.analysis,
+            label="B",
+            ports=[
+                GraphPort(port_id="in", name="in", direction=PortDirection.input, port_type=PortType.generic),
+                GraphPort(port_id="out", name="out", direction=PortDirection.output, port_type=PortType.generic),
+            ],
+        )
+        graph = WorkflowGraph(
+            graph_id="cyc",
+            name="cycle",
+            nodes=[a, b],
+            edges=[
+                GraphEdge(edge_id="ab", from_node_id="a", from_port_id="out", to_node_id="b", to_port_id="in"),
+                GraphEdge(edge_id="ba", from_node_id="b", from_port_id="out", to_node_id="a", to_port_id="in"),
+            ],
+        )
+        issues = graph.validate_acyclic()
+        assert any(i.code == "cycle_detected" for i in issues)
+
+    def test_direction_and_type_errors(self):
+        src = GraphNode(
+            node_id="src",
+            kind=NodeKind.source,
+            label="src",
+            ports=[GraphPort(port_id="in", name="in", direction=PortDirection.input, port_type=PortType.fastq)],
+        )
+        dst = GraphNode(
+            node_id="dst",
+            kind=NodeKind.analysis,
+            label="dst",
+            ports=[GraphPort(port_id="in", name="in", direction=PortDirection.input, port_type=PortType.bam)],
+        )
+        graph = WorkflowGraph(
+            graph_id="bad",
+            name="bad",
+            nodes=[src, dst],
+            edges=[GraphEdge(edge_id="e", from_node_id="src", from_port_id="in", to_node_id="dst", to_port_id="in")],
+        )
+        direction_issues = graph.validate_port_direction_compatibility()
+        type_issues = graph.validate_type_compatibility()
+        assert any(i.code == "incompatible_port_direction" for i in direction_issues)
+        assert any(i.code == "incompatible_port_type" for i in type_issues)
+
+    def test_duplicate_ids(self):
+        n1 = GraphNode(node_id="dup", kind=NodeKind.source, label="n1")
+        n2 = GraphNode(node_id="dup", kind=NodeKind.sink, label="n2")
+        graph = WorkflowGraph(graph_id="g", name="dup graph", nodes=[n1, n2])
+        issues = graph.validate_unique_ids()
+        assert any(i.code == "duplicate_node_id" for i in issues)
+
+
+class TestWorkflowGraphEnums:
+    def test_execution_backend_enum(self):
+        assert ExecutionBackend.snakemake.value == "snakemake"
+
+    def test_validation_issue_model(self):
+        issue = GraphValidationIssue(
+            severity=ValidationSeverity.warning,
+            code="test_warning",
+            message="Example warning",
+        )
+        assert issue.severity == ValidationSeverity.warning
 
 
 # ── Cross-model integration ──────────────────────────────────────────────────

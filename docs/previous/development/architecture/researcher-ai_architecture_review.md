@@ -1,3 +1,10 @@
+> [!WARNING]
+> **Deprecated Architecture Review**
+>
+> This document is retained for historical context only.
+> The canonical architecture-planning document is `docs/WORKFLOW_GRAPH_IR_PLAN.md`.
+> The current implemented architecture reference remains `docs/ARCHITECTURE.md`.
+
 # researcher-ai: Architecture Review & Improvement Recommendations
 
 **Date:** April 6, 2026

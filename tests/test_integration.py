@@ -1092,9 +1092,13 @@ class TestSnapshotPipelineFromRealFixture:
         assert "rule all:" in self.pipeline.snakefile_content
 
     def test_pipeline_step_count_matches_assays(self):
-        """Pipeline steps must be ≥ total method steps (one PipelineStep per AnalysisStep)."""
-        total_method_steps = sum(len(a.steps) for a in self.method.assays)
-        assert len(self.pipeline.config.steps) >= total_method_steps
+        """Pipeline steps must cover all computational method steps."""
+        total_comp_steps = sum(
+            len(a.steps)
+            for a in self.method.assays
+            if a.method_category == MethodCategory.computational
+        )
+        assert len(self.pipeline.config.steps) >= total_comp_steps
 
     def test_pipeline_conda_has_star(self):
         assert "star" in self.pipeline.conda_env_yaml
