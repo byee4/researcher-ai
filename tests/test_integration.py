@@ -745,7 +745,7 @@ class TestSnapshotMultiAssayPipeline:
 
 @pytest.mark.live
 class TestLiveIntegrationECLIP:
-    """Live end-to-end test for PMID 26971820 (eCLIP, Van Nostrand 2016).
+    """Live end-to-end test for PMID 27018577 (eCLIP, Van Nostrand 2016).
 
     Requires: ANTHROPIC_API_KEY, network access.
     Run with: pytest --run-live tests/test_integration.py::TestLiveIntegrationECLIP -v
@@ -757,7 +757,7 @@ class TestLiveIntegrationECLIP:
     - Standard CLIP-seq pipeline → Snakemake rules generatable
     """
 
-    PMID = "26971820"
+    PMID = "27018577"
     EXPECTED_DOI = "10.1038/nmeth.3810"
     EXPECTED_ACCESSION = "GSE77695"
 
