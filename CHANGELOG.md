@@ -2,6 +2,24 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-08 (v2.1.1)
+- Documented BioWorkflow rollout controls and strict-mode fallback behavior across README and docs.
+- Added explicit user-facing docs for:
+  - `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`/`warn`/`on`)
+  - `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS`
+  - strict terminal state `needs_human_review` with `human_review_summary`
+  - vision fallback observability fields (`vision_fallback_count`, `vision_fallback_latency_seconds`)
+
+## 2026-04-08 (v2.1.0)
+- Completed BioWorkflow staged integration on `main`:
+  - multimodal per-paper retrieval indexing (`PaperRAGStore`) with panel-level provenance
+  - evidence validation stage with template priors
+  - iterative retrieval refinement with circuit-breaker warnings and adaptive timeout controls
+  - rollout gating and benchmark tooling for Phase 2/4 safety checks
+- Added strict-mode graceful degradation path:
+  - terminal `needs_human_review` state (no endless retry loop)
+  - structured `human_review_summary` for manual triage
+
 ## 2026-04-07
 - Adopted canonical architecture-planning document: `docs/WORKFLOW_GRAPH_IR_PLAN.md`.
 - Marked `docs/previous/development/architecture/V2_ARCHITECTURE_PLAN.md` as deprecated (planning authority moved to IR plan).

@@ -72,12 +72,28 @@ Most common settings:
 - `OPENAI_API_KEY`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (provider keys)
 - `RESEARCHER_AI_MODEL` (default model router, default: `gpt-5.4`)
 - `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` (LLM request timeout)
+- `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default `warn`)
+  - `off`: skip BioWorkflow validation stage
+  - `warn`: validate and continue (non-blocking)
+  - `on`: strict mode; if ungrounded fields are detected, run ends in `needs_human_review`
+- `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` (hard cap for iterative retrieval per stage)
 - `RESEARCHER_AI_BIOC_ENABLED` (enable/disable BioC enrichment)
 - `RESEARCHER_AI_FIGURE_CALIBRATION` (on/off)
 - `RESEARCHER_AI_HPC_PROFILE` (`tscc` or `local`)
 
 Model/provider routing defaults are defined in:
 `researcher_ai/config/models.yaml`
+
+## BioWorkflow Strict-Mode Fallback
+
+When `RESEARCHER_AI_BIOWORKFLOW_MODE=on`, validation can block unsafe pipeline
+generation if ungrounded critical fields remain. In that case, the orchestrator
+returns a terminal stage:
+
+- `stage = "needs_human_review"`
+- `human_review_required = true`
+- `human_review_summary` with `ungrounded_count`, `ungrounded_fields`, and
+  a recommended next action.
 
 ## Testing
 
