@@ -1,0 +1,14 @@
+assay_type: chipseq
+required_stages:
+  - qc
+  - trim
+  - align
+  - peak
+  - motif
+required_fields_by_stage:
+  peak:
+    - software
+    - parameters
+critical_fields:
+  - software
+  - parameters

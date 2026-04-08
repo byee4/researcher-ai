@@ -1,0 +1,22 @@
+name: model-alias-guard
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  parser-model-alias-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run parser model alias guard
+        run: python scripts/check_model_alias_usage.py

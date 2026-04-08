@@ -34,12 +34,16 @@ from researcher_ai.models.figure import (
     SubFigure,
 )
 from researcher_ai.models.method import (
+    AssayTemplate,
     AnalysisStep,
     Assay,
     AssayDependency,
     AssayGraph,
+    EvidenceCategory,
     Method,
     MethodCategory,
+    ValidationReport,
+    ValidationVerdict,
 )
 from researcher_ai.models.dataset import (
     DataSource,
@@ -90,7 +94,8 @@ __all__ = [
     "Figure", "PanelLayout", "PlotCategory", "PlotLayer", "PlotType",
     "RenderingSpec", "StatisticalAnnotation", "SubFigure",
     # method
-    "AnalysisStep", "Assay", "AssayDependency", "AssayGraph", "Method", "MethodCategory",
+    "AssayTemplate", "AnalysisStep", "Assay", "AssayDependency", "AssayGraph",
+    "EvidenceCategory", "Method", "MethodCategory", "ValidationReport", "ValidationVerdict",
     # dataset
     "DataSource", "Dataset", "GEODataset", "ProteomicsDataset",
     "SampleMetadata", "SRADataset",

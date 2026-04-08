@@ -15,12 +15,14 @@ from researcher_ai.models.method import Method
 from researcher_ai.models.paper import Paper, PaperSource
 from researcher_ai.models.pipeline import Pipeline
 from researcher_ai.models.software import Software
+from researcher_ai.models.method import ValidationReport
 from researcher_ai.models.workflow_graph import GraphValidationIssue, WorkflowGraph
 from researcher_ai.parsers.data.geo_parser import GEOParser
 from researcher_ai.parsers.data.sra_parser import SRAParser
 from researcher_ai.parsers.figure_parser import FigureParser
 from researcher_ai.parsers.methods_parser import MethodsParser
 from researcher_ai.parsers.paper_parser import PaperParser
+from researcher_ai.parsers.validation_agent import ValidationAgent
 from researcher_ai.parsers.software_parser import SoftwareParser
 from researcher_ai.pipeline.builder import PipelineBuilder
 from researcher_ai.pipeline.workflow_graph_mapper import build_workflow_graph
@@ -58,6 +60,7 @@ class WorkflowState(TypedDict, total=False):
     software: list[Software]
     workflow_graph: WorkflowGraph
     workflow_graph_validation_issues: list[GraphValidationIssue]
+    method_validation_report: ValidationReport
     pipeline: Pipeline
     build_attempts: int
     max_build_attempts: int
@@ -89,6 +92,7 @@ class WorkflowOrchestrator:
         self.paper_parser = PaperParser()
         self.figure_parser = FigureParser()
         self.methods_parser = MethodsParser()
+        self.validation_agent = ValidationAgent()
         self.software_parser = SoftwareParser()
         self.pipeline_builder = PipelineBuilder()
         self.max_build_attempts = max_build_attempts
@@ -116,6 +120,7 @@ class WorkflowOrchestrator:
         graph.add_node("parse_datasets", self._node_parse_datasets)
         graph.add_node("parse_software", self._node_parse_software)
         graph.add_node("build_workflow_graph", self._node_build_workflow_graph)
+        graph.add_node("validate_method", self._node_validate_method)
         graph.add_node("build_pipeline", self._node_build_pipeline)
 
         graph.set_entry_point("parse_paper")
@@ -124,7 +129,8 @@ class WorkflowOrchestrator:
         graph.add_edge("parse_methods", "parse_datasets")
         graph.add_edge("parse_datasets", "parse_software")
         graph.add_edge("parse_software", "build_workflow_graph")
-        graph.add_edge("build_workflow_graph", "build_pipeline")
+        graph.add_edge("build_workflow_graph", "validate_method")
+        graph.add_edge("validate_method", "build_pipeline")
         graph.add_conditional_edges(
             "build_pipeline",
             self._next_after_build_pipeline,
@@ -143,6 +149,7 @@ class WorkflowOrchestrator:
             self._node_parse_datasets,
             self._node_parse_software,
             self._node_build_workflow_graph,
+            self._node_validate_method,
         ):
             state.update(fn(state))
         while True:
@@ -224,8 +231,31 @@ class WorkflowOrchestrator:
         return {
             "workflow_graph": graph,
             "workflow_graph_validation_issues": issues,
-            "progress": 88,
+            "progress": 86,
             "stage": "built_workflow_graph",
+        }
+
+    def _node_validate_method(self, state: WorkflowState) -> WorkflowState:
+        self._require_state_keys(state, ["method"], node="validate_method")
+        method = state["method"]
+        report = self.validation_agent.validate(
+            method=method,
+            paper_rag=getattr(self.methods_parser, "paper_rag", None),
+            protocol_rag=getattr(self.methods_parser, "protocol_rag", None),
+        )
+        warnings = list(method.parse_warnings)
+        warnings.extend(report.warnings)
+        updated_method = method.model_copy(
+            update={
+                "validation_report": report,
+                "parse_warnings": warnings,
+            }
+        )
+        return {
+            "method": updated_method,
+            "method_validation_report": report,
+            "progress": 90,
+            "stage": "validated_method",
         }
 
     def _node_build_pipeline(self, state: WorkflowState) -> WorkflowState:

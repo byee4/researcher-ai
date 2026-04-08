@@ -1,0 +1,15 @@
+assay_type: rnaseq
+required_stages:
+  - qc
+  - trim
+  - align
+  - quantify
+  - differential
+required_fields_by_stage:
+  align:
+    - software
+    - software_version
+    - parameters
+critical_fields:
+  - software
+  - parameters

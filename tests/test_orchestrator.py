@@ -67,3 +67,10 @@ def test_orchestrator_state_validation_raises_on_missing_paper(monkeypatch):
     orchestrator = WorkflowOrchestrator(max_build_attempts=1)
     with pytest.raises(KeyError):
         orchestrator._node_parse_figures({"source": "x", "source_type": PaperSource.PMID})
+
+
+def test_orchestrator_state_validation_raises_on_missing_method_for_validation(monkeypatch):
+    monkeypatch.setattr(orch_mod, "_HAS_LANGGRAPH", False)
+    orchestrator = WorkflowOrchestrator(max_build_attempts=1)
+    with pytest.raises(KeyError):
+        orchestrator._node_validate_method({"source": "x", "source_type": PaperSource.PMID})
