@@ -23,6 +23,14 @@ aliases:
   gemini-3.1-pro: gemini-2.5-pro
   gpt-5.4-planning: gpt-4.1
 
+# ── Model fallback routing (rate-limit failover) ─────────────────────────────
+# Keys are requested model routers; values are ordered fallback routers.
+# Fallbacks are attempted only for rate-limit style failures (429 / too many requests).
+fallbacks:
+  gpt-5.4: [claude-4.6-opus]
+  gpt-5.4-planning: [claude-4.6-opus]
+  gemini-3.1-pro: [gpt-5.4]
+
 # ── Per-provider settings ──────────────────────────────────────────────────────
 providers:
   openai:
@@ -32,15 +40,19 @@ providers:
     # Keys are model substring patterns; values are the enforced temperature.
     temperature_constraints:
       "/gpt-5": 1.0
+    # Used for preflight token budget checks before dispatch.
+    max_context_tokens: 128000
 
   anthropic:
     api_key_envs: [ANTHROPIC_API_KEY]
+    max_context_tokens: 200000
 
   gemini:
     api_key_envs: [GEMINI_API_KEY, GOOGLE_API_KEY]
     # Gemini sometimes returns truncated JSON when max_tokens is very small.
     # Enforce a floor to guarantee valid structured output.
     min_max_tokens: 400
+    max_context_tokens: 1048576
     # Safety categories are disabled for scientific literature, which often
     # contains clinical or biological content that would otherwise be blocked.
     safety_settings:
