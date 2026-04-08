@@ -142,6 +142,19 @@ class _AssayList(BaseModel):
     )
 
 
+class _AssaySkeletonItem(BaseModel):
+    """Workflow skeleton stages for one assay."""
+
+    name: str
+    stages: list[str] = Field(default_factory=list)
+
+
+class _AssaySkeletonList(BaseModel):
+    """Container for assay skeleton decomposition output."""
+
+    assays: list[_AssaySkeletonItem] = Field(default_factory=list)
+
+
 class _StepMeta(BaseModel):
     """LLM-extracted metadata for a single analysis step."""
     step_number: int
@@ -351,6 +364,7 @@ class MethodsParser:
         assay_names = self._identify_assays(methods_text)
         assay_names = self._canonicalize_assay_names(paper, methods_text, assay_names)
         assay_names = _deduplicate_ordered_casefold(assay_names)
+        assay_skeletons = self._build_assay_skeletons(assay_names, methods_text)
 
         # Classify assays and optionally filter to strictly computational assays only.
         # _classify_assays returns {} on failure; the fallback in the filter loop
@@ -397,6 +411,11 @@ class MethodsParser:
         for name in assay_names:
             method_cat = category_map.get(name, MethodCategory.computational)
             try:
+                retrieval_hits = self._iterative_retrieval_loop(
+                    assay_name=name,
+                    skeleton_stages=assay_skeletons.get(name) or self._default_stages_for_assay(name),
+                )
+                assay_context = self._render_retrieved_context(retrieval_hits, max_chars=5000)
                 assay = self._parse_assay(
                     name,
                     methods_text,
@@ -404,6 +423,7 @@ class MethodsParser:
                     figure_context,
                     assay_names=assay_names,
                     method_category=method_cat,
+                    assay_context=assay_context or None,
                 )
                 assay = self._apply_code_references(assay, code_refs)
                 assay = self._sanitize_assay_data_source(assay, grounded_accessions)
@@ -748,6 +768,171 @@ class MethodsParser:
             logger.warning("Assay classification failed: %s", exc)
             return {}
 
+    def _build_assay_skeletons(
+        self,
+        assay_names: list[str],
+        methods_text: str,
+    ) -> dict[str, list[str]]:
+        """Build high-level per-assay stage skeletons for iterative retrieval."""
+        if not assay_names:
+            return {}
+        assay_list = "\n".join(f"- {name}" for name in assay_names)
+        out: dict[str, list[str]] = {}
+        try:
+            result = _extract_structured_data(
+                prompt=(
+                    "For each assay below, list concise workflow stages in execution order. "
+                    "Use short stage names like qc, trim, align, quantify, differential, peak_call, motif, "
+                    "variant_call, filter, annotate. Return 3-8 stages per assay.\n\n"
+                    f"ASSAYS:\n{assay_list}\n\n"
+                    f"METHODS TEXT:\n{methods_text[:5000]}"
+                ),
+                output_schema=_AssaySkeletonList,
+                system=SYSTEM_METHODS_PARSER,
+                model=self.llm_model,
+                cache=self.cache,
+            )
+            for item in result.assays:
+                canonical = _normalize_assay_name(item.name, assay_names) or item.name
+                stages = [s.strip().lower() for s in item.stages if str(s).strip()]
+                if stages:
+                    out[canonical] = _deduplicate_ordered_casefold(stages)
+        except Exception as exc:
+            logger.warning("Assay skeleton decomposition failed: %s", exc)
+
+        for name in assay_names:
+            if name not in out:
+                out[name] = self._default_stages_for_assay(name)
+        return out
+
+    def _default_stages_for_assay(self, assay_name: str) -> list[str]:
+        text = (assay_name or "").lower()
+        if "rna" in text:
+            return ["qc", "trim", "align", "quantify", "differential"]
+        if "chip" in text:
+            return ["qc", "trim", "align", "peak_call", "motif"]
+        if "variant" in text or "wgs" in text:
+            return ["qc", "trim", "align", "variant_call", "filter", "annotate"]
+        return ["qc", "align", "analyze"]
+
+    def _iterative_retrieval_loop(
+        self,
+        *,
+        assay_name: str,
+        skeleton_stages: list[str],
+        max_refinement_rounds: int = 2,
+    ) -> list[dict[str, object]]:
+        """Multi-round retrieval with deterministic circuit breakers."""
+        collected: list[dict[str, object]] = []
+        for stage in skeleton_stages:
+            query = f"{assay_name} {stage} software version parameters"
+            stage_hits = self._query_evidence_hits(query, top_k=3)
+            collected.extend(stage_hits)
+            if self._stage_fields_complete(stage_hits, stage):
+                continue
+            missing = self._detect_missing_fields(stage_hits, stage)
+            for _ in range(max_refinement_rounds):
+                if not missing:
+                    break
+                refined_query = f"{assay_name} {stage} {' '.join(missing)} settings arguments"
+                refinement_hits = self._query_evidence_hits(refined_query, top_k=2)
+                stage_hits.extend(refinement_hits)
+                collected.extend(refinement_hits)
+                missing = self._detect_missing_fields(stage_hits, stage)
+        deduped: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for hit in collected:
+            text = str(hit.get("text", "")).strip()
+            if not text:
+                continue
+            key = text[:220].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(hit)
+        return deduped
+
+    def _query_evidence_hits(self, query: str, top_k: int = 3) -> list[dict[str, object]]:
+        store = getattr(self, "protocol_rag", None)
+        if store is None:
+            store = ProtocolRAGStore()
+            self.protocol_rag = store
+        try:
+            protocol_raw = store.query(query, top_k=max(top_k, 3))
+        except Exception:
+            protocol_raw = []
+        protocol_hits = protocol_raw if isinstance(protocol_raw, list) else []
+        paper_store = getattr(self, "paper_rag", None)
+        if paper_store is not None:
+            try:
+                paper_raw = paper_store.query(query, top_k=max(top_k, 3))
+            except Exception:
+                paper_raw = []
+            paper_hits = paper_raw if isinstance(paper_raw, list) else []
+        else:
+            paper_hits = []
+        return merge_retrieval_results(
+            paper_hits=paper_hits,
+            protocol_hits=protocol_hits,
+            top_k=top_k,
+            paper_bias=0.10,
+            protocol_bias=0.0,
+        )
+
+    def _stage_required_fields(self, stage: str) -> list[str]:
+        lower = (stage or "").lower()
+        if any(k in lower for k in ("align", "quant", "peak", "call", "variant", "differential", "annotate")):
+            return ["software", "parameters"]
+        return ["software"]
+
+    def _detect_missing_fields(
+        self,
+        hits: list[dict[str, object]],
+        stage: str,
+    ) -> list[str]:
+        required = self._stage_required_fields(stage)
+        text = " ".join(str(h.get("text", "")) for h in hits)
+        missing: list[str] = []
+        if "software" in required and _SOFTWARE_HINT_RE.search(text) is None:
+            missing.append("software")
+        if "parameters" in required:
+            has_param = bool(re.search(r"--[A-Za-z0-9_\-]+", text)) or bool(
+                re.search(r"\b[A-Za-z][A-Za-z0-9_]+\s*=\s*[^,\s;]+", text)
+            )
+            if not has_param:
+                missing.append("parameters")
+        return missing
+
+    def _stage_fields_complete(
+        self,
+        hits: list[dict[str, object]],
+        stage: str,
+    ) -> bool:
+        return len(self._detect_missing_fields(hits, stage)) == 0
+
+    def _render_retrieved_context(
+        self,
+        hits: list[dict[str, object]],
+        *,
+        max_chars: int = 5000,
+    ) -> str:
+        if not hits:
+            return ""
+        parts: list[str] = []
+        for hit in hits:
+            source = str(hit.get("source", "unknown"))
+            source_type = str(hit.get("source_type", "unknown"))
+            chunk_type = hit.get("chunk_type")
+            chunk_tag = f" chunk_type={chunk_type}" if chunk_type else ""
+            txt = str(hit.get("text", "")).strip()
+            if not txt:
+                continue
+            parts.append(f"[{source_type}:{source}{chunk_tag}] {txt}")
+            if sum(len(p) for p in parts) >= max_chars:
+                break
+        combined = "\n\n".join(parts)
+        return combined[:max_chars]
+
     # ── Per-assay parsing ────────────────────────────────────────────────────
 
     def _parse_assay(
@@ -758,6 +943,7 @@ class MethodsParser:
         figure_context: dict[str, str],
         assay_names: Optional[list[str]] = None,
         method_category: MethodCategory = MethodCategory.computational,
+        assay_context: Optional[str] = None,
     ) -> Assay:
         """Decompose a single assay into ordered AnalysisSteps via LLM.
 
@@ -770,7 +956,7 @@ class MethodsParser:
                 Stamped onto the returned Assay so downstream code can filter
                 without re-running classification.
         """
-        paragraph = _extract_assay_paragraph(
+        paragraph = assay_context or _extract_assay_paragraph(
             methods_text,
             assay_name,
             assay_names=assay_names,
@@ -946,24 +1132,7 @@ class MethodsParser:
 
     def search_protocol_docs(self, query: str, top_k: int = 3) -> str:
         """Search merged paper+protocol evidence with paper-first ranking."""
-        store = getattr(self, "protocol_rag", None)
-        if store is None:
-            store = ProtocolRAGStore()
-            self.protocol_rag = store
-        protocol_hits = store.query(query, top_k=max(top_k, 3))
-        paper_store = getattr(self, "paper_rag", None)
-        paper_hits = (
-            paper_store.query(query, top_k=max(top_k, 3))
-            if paper_store is not None
-            else []
-        )
-        merged = merge_retrieval_results(
-            paper_hits=paper_hits,
-            protocol_hits=protocol_hits,
-            top_k=top_k,
-            paper_bias=0.10,
-            protocol_bias=0.0,
-        )
+        merged = self._query_evidence_hits(query, top_k=top_k)
         if not merged:
             return "No protocol documents matched the query."
         lines: list[str] = []
@@ -1078,7 +1247,17 @@ class MethodsParser:
                     out.append(assay)
                     continue
 
-            by_step = {u.step_number: u for u in inferred.updates}
+            updates = getattr(inferred, "updates", None)
+            if not isinstance(updates, list):
+                updates = []
+                warnings.append(
+                    f"inferred_parameters_invalid_schema: assay={assay.name!r}"
+                )
+            by_step = {
+                u.step_number: u
+                for u in updates
+                if hasattr(u, "step_number")
+            }
             updated_steps: list[AnalysisStep] = []
             applied = 0
             for step in assay.steps:
