@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from researcher_ai.parsers.methods_parser import MethodsParser
+from researcher_ai.models.paper import Paper, PaperSource, PaperType, Section
+from researcher_ai.utils.paper_indexer import PaperRAGStore
 
 
 def _make_parser() -> MethodsParser:
@@ -57,3 +61,48 @@ def test_render_retrieved_context_preserves_provenance_tags():
     )
     assert "[paper:paper:Methods" in text
     assert "chunk_type=table" in text
+
+
+def test_iterative_retrieval_uses_recovered_table_evidence(monkeypatch, tmp_path: Path):
+    parser = _make_parser()
+    parser.protocol_rag = type("ProtocolStub", (), {"query": lambda self, query, top_k=3: []})()
+    parser.paper_rag = PaperRAGStore(
+        llm_model="test-model",
+        enable_vector_index=False,
+        summary_builder=lambda text, chunk_type: "",
+    )
+
+    malformed_table = (
+        "| Tool | Version |\n"
+        "| STAR | 2.7.11a |\n"
+        "| Param | --outSAMtype BAM SortedByCoordinate |\n"
+    )
+    paper = Paper(
+        title="Malformed table methods",
+        authors=["A"],
+        abstract="",
+        source=PaperSource.PDF,
+        source_path=str(tmp_path / "paper.pdf"),
+        paper_type=PaperType.EXPERIMENTAL,
+        sections=[Section(title="Methods", text=malformed_table)],
+    )
+
+    monkeypatch.setattr(
+        parser.paper_rag,
+        "_recover_table_chunk_with_vision",
+        lambda *, malformed_table_text, source_pdf, section_title: (
+            "| Tool | Version |\n"
+            "| --- | --- |\n"
+            "| STAR | 2.7.11a |\n"
+            "| Param | --outSAMtype BAM SortedByCoordinate |\n"
+        ),
+    )
+    parser.paper_rag.build_from(paper=paper, figures=[])
+
+    hits = parser._iterative_retrieval_loop(
+        assay_name="RNA-seq",
+        skeleton_stages=["align"],
+        max_refinement_rounds=1,
+    )
+    joined = "\n".join(str(h.get("text", "")) for h in hits)
+    assert "--outSAMtype BAM SortedByCoordinate" in joined
