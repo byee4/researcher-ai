@@ -15,6 +15,8 @@ _METRICS = (
     "retrieval_rounds",
     "latency_seconds",
     "token_cost",
+    "vision_fallback_count",
+    "vision_latency_seconds",
 )
 
 
@@ -146,4 +148,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
