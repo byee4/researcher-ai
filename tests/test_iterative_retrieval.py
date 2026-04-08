@@ -36,7 +36,7 @@ def test_iterative_retrieval_refines_when_parameters_missing(monkeypatch):
         return [{"text": "STAR aligner used for mapping", "source": "paper"}]
 
     monkeypatch.setattr(parser, "_query_evidence_hits", _fake_query)
-    hits = parser._iterative_retrieval_loop(
+    hits, warnings = parser._iterative_retrieval_loop(
         assay_name="RNA-seq",
         skeleton_stages=["align"],
         max_refinement_rounds=2,
@@ -44,6 +44,7 @@ def test_iterative_retrieval_refines_when_parameters_missing(monkeypatch):
 
     joined = "\n".join(str(h.get("text", "")) for h in hits)
     assert "--outSAMtype" in joined
+    assert warnings == []
 
 
 def test_render_retrieved_context_preserves_provenance_tags():
@@ -99,10 +100,26 @@ def test_iterative_retrieval_uses_recovered_table_evidence(monkeypatch, tmp_path
     )
     parser.paper_rag.build_from(paper=paper, figures=[])
 
-    hits = parser._iterative_retrieval_loop(
+    hits, warnings = parser._iterative_retrieval_loop(
         assay_name="RNA-seq",
         skeleton_stages=["align"],
         max_refinement_rounds=1,
     )
     joined = "\n".join(str(h.get("text", "")) for h in hits)
     assert "--outSAMtype BAM SortedByCoordinate" in joined
+    assert warnings == []
+
+
+def test_iterative_retrieval_emits_circuit_breaker_warning_when_unresolved(monkeypatch):
+    parser = _make_parser()
+    monkeypatch.setattr(
+        parser,
+        "_query_evidence_hits",
+        lambda query, top_k=3: [{"text": "Alignment was performed.", "source": "paper"}],
+    )
+    _, warnings = parser._iterative_retrieval_loop(
+        assay_name="RNA-seq",
+        skeleton_stages=["align"],
+        max_refinement_rounds=1,
+    )
+    assert any("retrieval_circuit_breaker" in msg for msg in warnings)

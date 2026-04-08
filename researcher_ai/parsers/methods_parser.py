@@ -303,6 +303,7 @@ class MethodsParser:
         paper_rag_lexical_min_token_len: int = 2,
         assay_parse_concurrency: int = 1,
         assay_parse_base_timeout_seconds: float = llm_utils.DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        max_retrieval_refinement_rounds: int = 2,
     ):
         """Initialize MethodsParser with optional on-disk LLM cache."""
         self.llm_model = llm_model
@@ -311,6 +312,7 @@ class MethodsParser:
         self.assay_parse_base_timeout_seconds = float(
             max(1.0, float(assay_parse_base_timeout_seconds))
         )
+        self.max_retrieval_refinement_rounds = max(0, int(max_retrieval_refinement_rounds))
         self.protocol_rag = protocol_rag or ProtocolRAGStore(
             docs_dir=rag_docs_dir,
             persist_dir=rag_persist_dir,
@@ -595,9 +597,10 @@ class MethodsParser:
     ) -> tuple[Assay, list[str]]:
         method_cat = category_map.get(assay_name, MethodCategory.computational)
         try:
-            retrieval_hits = self._iterative_retrieval_loop(
+            retrieval_hits, retrieval_warnings = self._iterative_retrieval_loop(
                 assay_name=assay_name,
                 skeleton_stages=assay_skeletons.get(assay_name) or self._default_stages_for_assay(assay_name),
+                max_refinement_rounds=self.max_retrieval_refinement_rounds,
             )
             assay_context = self._render_retrieved_context(retrieval_hits, max_chars=5000)
             assay = self._parse_assay(
@@ -611,7 +614,7 @@ class MethodsParser:
             )
             assay = self._apply_code_references(assay, code_refs)
             assay = self._sanitize_assay_data_source(assay, grounded_accessions)
-            return assay, []
+            return assay, retrieval_warnings
         except Exception as exc:
             msg = f"assay_stub: {assay_name!r} could not be parsed ({type(exc).__name__}: {exc})"
             logger.warning(msg)
@@ -986,9 +989,10 @@ class MethodsParser:
         assay_name: str,
         skeleton_stages: list[str],
         max_refinement_rounds: int = 2,
-    ) -> list[dict[str, object]]:
+    ) -> tuple[list[dict[str, object]], list[str]]:
         """Multi-round retrieval with deterministic circuit breakers."""
         collected: list[dict[str, object]] = []
+        warnings: list[str] = []
         for stage in skeleton_stages:
             query = f"{assay_name} {stage} software version parameters"
             stage_hits = self._query_evidence_hits(query, top_k=3)
@@ -996,6 +1000,7 @@ class MethodsParser:
             if self._stage_fields_complete(stage_hits, stage):
                 continue
             missing = self._detect_missing_fields(stage_hits, stage)
+            rounds = 0
             for _ in range(max_refinement_rounds):
                 if not missing:
                     break
@@ -1004,6 +1009,12 @@ class MethodsParser:
                 stage_hits.extend(refinement_hits)
                 collected.extend(refinement_hits)
                 missing = self._detect_missing_fields(stage_hits, stage)
+                rounds += 1
+            if missing:
+                warnings.append(
+                    "retrieval_circuit_breaker: "
+                    f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={','.join(missing)}"
+                )
         deduped: list[dict[str, object]] = []
         seen: set[str] = set()
         for hit in collected:
@@ -1015,7 +1026,7 @@ class MethodsParser:
                 continue
             seen.add(key)
             deduped.append(hit)
-        return deduped
+        return deduped, warnings
 
     def _query_evidence_hits(self, query: str, top_k: int = 3) -> list[dict[str, object]]:
         store = getattr(self, "protocol_rag", None)
