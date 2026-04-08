@@ -1,17 +1,9 @@
 """Nextflow pipeline generator.
 
-Two operating modes:
-1. **nf-core mode** — when PipelineConfig.nf_core_pipeline is set, generates a
-   params YAML and samplesheet CSV to launch an existing nf-core pipeline with
-   ``nextflow run nf-core/<pipeline> -params-file params.yaml``.
-2. **Custom DSL2 mode** — generates a Nextflow DSL2 workflow with one PROCESS
-   block per PipelineStep and a main WORKFLOW block that wires them together.
-
-Design notes:
-- Custom mode wraps each step command in a PROCESS with input/output channels.
-- nf-core mode relies on nf-core's samplesheet conventions; samplesheet format
-  differs by pipeline (rnaseq uses sample,fastq_1,fastq_2; atacseq similar).
-- Generated files are returned as strings; the caller writes them to disk.
+Supports two modes. In nf-core mode, it creates a params YAML and samplesheet
+CSV for launching existing nf-core workflows. In custom mode, it generates a
+DSL2 workflow with one process per ``PipelineStep`` plus a workflow block that
+wires dependencies.
 """
 
 from __future__ import annotations
@@ -55,13 +47,7 @@ _PLACEHOLDER_VALUES: dict[str, str] = {
 
 
 class NextflowGenerator:
-    """Generate Nextflow workflow content from a PipelineConfig.
-
-    Two modes:
-    1. nf-core mode: generate a launch params YAML + samplesheet CSV for an
-       existing nf-core pipeline.
-    2. Custom mode: generate a full DSL2 .nf workflow with processes for each step.
-    """
+    """Generate Nextflow workflow content from a ``PipelineConfig``."""
 
     def generate(self, config: PipelineConfig) -> str:
         """Generate Nextflow content as a string.

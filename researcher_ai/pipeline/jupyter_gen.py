@@ -1,15 +1,7 @@
 """Jupyter notebook generator for figure reproduction.
 
-Creates a notebook with:
-- A setup cell: imports and data paths
-- For each Figure: a markdown cell describing the figure + code cells for
-  loading data and generating the plot
-- Plot code is mapped from SubFigure.plot_type to the appropriate
-  matplotlib / seaborn / plotly function
-
-PlotType → library mapping is driven by the SubFigure's plot_category and
-plot_type fields (from models/figure.py), plus any layer-level library_hint
-or function_hint overrides.
+Builds an ``nbformat`` notebook with setup imports, figure-level markdown, and
+plotting cells mapped from subfigure plot metadata.
 """
 
 from __future__ import annotations
@@ -127,14 +119,7 @@ _LIBRARY_IMPORTS: dict[str, str] = {
 
 
 class JupyterGenerator:
-    """Generate a Jupyter notebook that reproduces paper figures.
-
-    Creates a notebook with:
-    - Setup cell: imports and data paths
-    - For each figure: markdown description + data-loading + plotting cells
-    - Uses matplotlib/seaborn for common plot types; plotly for interactive
-    - Comments link each cell to the original figure/subfigure
-    """
+    """Generate a Jupyter notebook that reproduces parsed paper figures."""
 
     def generate(self, config: PipelineConfig, figures: list[Figure]) -> str:
         """Generate a Jupyter notebook as a JSON string (nbformat v4).
