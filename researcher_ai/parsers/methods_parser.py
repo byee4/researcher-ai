@@ -15,6 +15,7 @@ Strategy:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -300,10 +301,16 @@ class MethodsParser:
         paper_rag_chunk_size: int = 900,
         paper_rag_chunk_overlap: int = 120,
         paper_rag_lexical_min_token_len: int = 2,
+        assay_parse_concurrency: int = 1,
+        assay_parse_base_timeout_seconds: float = llm_utils.DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ):
         """Initialize MethodsParser with optional on-disk LLM cache."""
         self.llm_model = llm_model
         self.cache = LLMCache(cache_dir) if cache_dir else None
+        self.assay_parse_concurrency = max(1, int(assay_parse_concurrency))
+        self.assay_parse_base_timeout_seconds = float(
+            max(1.0, float(assay_parse_base_timeout_seconds))
+        )
         self.protocol_rag = protocol_rag or ProtocolRAGStore(
             docs_dir=rag_docs_dir,
             persist_dir=rag_persist_dir,
@@ -408,43 +415,20 @@ class MethodsParser:
                     warnings.append(msg)
             assay_names = filtered_names
 
-        for name in assay_names:
-            method_cat = category_map.get(name, MethodCategory.computational)
-            try:
-                retrieval_hits = self._iterative_retrieval_loop(
-                    assay_name=name,
-                    skeleton_stages=assay_skeletons.get(name) or self._default_stages_for_assay(name),
-                )
-                assay_context = self._render_retrieved_context(retrieval_hits, max_chars=5000)
-                assay = self._parse_assay(
-                    name,
-                    methods_text,
-                    paper,
-                    figure_context,
-                    assay_names=assay_names,
-                    method_category=method_cat,
-                    assay_context=assay_context or None,
-                )
-                assay = self._apply_code_references(assay, code_refs)
-                assay = self._sanitize_assay_data_source(assay, grounded_accessions)
-                assays.append(assay)
-            except Exception as exc:
-                msg = f"assay_stub: {name!r} could not be parsed ({type(exc).__name__}: {exc})"
-                logger.warning(msg)
-                warnings.append(msg)
-                paragraph = _extract_assay_paragraph(
-                    methods_text,
-                    name,
-                    assay_names=assay_names,
-                )
-                fallback = _fallback_assay_from_text(
-                    assay_name=name,
-                    paragraph=paragraph,
-                    method_category=method_cat,
-                )
-                assays.append(
-                    fallback.model_copy(update={"description": "Could not be parsed."})
-                )
+        adaptive_timeout = self._adaptive_assay_timeout_seconds(len(assay_names))
+        with llm_utils.temporary_request_timeout(adaptive_timeout):
+            parsed_assays, assay_warnings = self._parse_assays(
+                assay_names=assay_names,
+                category_map=category_map,
+                assay_skeletons=assay_skeletons,
+                methods_text=methods_text,
+                paper=paper,
+                figure_context=figure_context,
+                code_refs=code_refs,
+                grounded_accessions=grounded_accessions,
+            )
+        assays.extend(parsed_assays)
+        warnings.extend(assay_warnings)
 
         dependencies, dep_warnings = self._identify_dependencies(assay_names, methods_text)
         warnings.extend(dep_warnings)
@@ -464,6 +448,187 @@ class MethodsParser:
             raw_methods_text=methods_text,
             parse_warnings=warnings,
         )
+
+    def _adaptive_assay_timeout_seconds(self, assay_count: int) -> float:
+        """Scale LLM timeout for multi-assay parses to reduce false timeouts."""
+        base = float(getattr(self, "assay_parse_base_timeout_seconds", llm_utils.DEFAULT_REQUEST_TIMEOUT_SECONDS))
+        count = max(0, int(assay_count))
+        if count <= 3:
+            return base
+        scaled = base * (1.0 + 0.30 * float(count - 3))
+        return min(scaled, base * 3.0)
+
+    def _parse_assays(
+        self,
+        *,
+        assay_names: list[str],
+        category_map: dict[str, MethodCategory],
+        assay_skeletons: dict[str, list[str]],
+        methods_text: str,
+        paper: Paper,
+        figure_context: dict[str, str],
+        code_refs: list[str],
+        grounded_accessions: list[str],
+    ) -> tuple[list[Assay], list[str]]:
+        if self.assay_parse_concurrency <= 1:
+            return self._parse_assays_sequential(
+                assay_names=assay_names,
+                category_map=category_map,
+                assay_skeletons=assay_skeletons,
+                methods_text=methods_text,
+                paper=paper,
+                figure_context=figure_context,
+                code_refs=code_refs,
+                grounded_accessions=grounded_accessions,
+            )
+
+        try:
+            asyncio.get_running_loop()
+            msg = "async_assay_parse_disabled_running_loop: falling back to sequential assay parsing"
+            logger.warning(msg)
+            assays, warnings = self._parse_assays_sequential(
+                assay_names=assay_names,
+                category_map=category_map,
+                assay_skeletons=assay_skeletons,
+                methods_text=methods_text,
+                paper=paper,
+                figure_context=figure_context,
+                code_refs=code_refs,
+                grounded_accessions=grounded_accessions,
+            )
+            return assays, [msg, *warnings]
+        except RuntimeError:
+            return asyncio.run(
+                self._parse_assays_async(
+                    assay_names=assay_names,
+                    category_map=category_map,
+                    assay_skeletons=assay_skeletons,
+                    methods_text=methods_text,
+                    paper=paper,
+                    figure_context=figure_context,
+                    code_refs=code_refs,
+                    grounded_accessions=grounded_accessions,
+                )
+            )
+
+    def _parse_assays_sequential(
+        self,
+        *,
+        assay_names: list[str],
+        category_map: dict[str, MethodCategory],
+        assay_skeletons: dict[str, list[str]],
+        methods_text: str,
+        paper: Paper,
+        figure_context: dict[str, str],
+        code_refs: list[str],
+        grounded_accessions: list[str],
+    ) -> tuple[list[Assay], list[str]]:
+        assays: list[Assay] = []
+        warnings: list[str] = []
+        for name in assay_names:
+            assay, assay_warnings = self._parse_single_assay(
+                assay_name=name,
+                assay_names=assay_names,
+                category_map=category_map,
+                assay_skeletons=assay_skeletons,
+                methods_text=methods_text,
+                paper=paper,
+                figure_context=figure_context,
+                code_refs=code_refs,
+                grounded_accessions=grounded_accessions,
+            )
+            assays.append(assay)
+            warnings.extend(assay_warnings)
+        return assays, warnings
+
+    async def _parse_assays_async(
+        self,
+        *,
+        assay_names: list[str],
+        category_map: dict[str, MethodCategory],
+        assay_skeletons: dict[str, list[str]],
+        methods_text: str,
+        paper: Paper,
+        figure_context: dict[str, str],
+        code_refs: list[str],
+        grounded_accessions: list[str],
+    ) -> tuple[list[Assay], list[str]]:
+        semaphore = asyncio.Semaphore(max(1, int(self.assay_parse_concurrency)))
+
+        async def _worker(idx: int, assay_name: str):
+            async with semaphore:
+                assay, warnings = await asyncio.to_thread(
+                    self._parse_single_assay,
+                    assay_name=assay_name,
+                    assay_names=assay_names,
+                    category_map=category_map,
+                    assay_skeletons=assay_skeletons,
+                    methods_text=methods_text,
+                    paper=paper,
+                    figure_context=figure_context,
+                    code_refs=code_refs,
+                    grounded_accessions=grounded_accessions,
+                )
+                return idx, assay, warnings
+
+        tasks = [_worker(i, name) for i, name in enumerate(assay_names)]
+        resolved = await asyncio.gather(*tasks)
+        resolved.sort(key=lambda item: item[0])
+        assays = [item[1] for item in resolved]
+        warnings: list[str] = []
+        for _, _, item_warnings in resolved:
+            warnings.extend(item_warnings)
+        return assays, warnings
+
+    def _parse_single_assay(
+        self,
+        *,
+        assay_name: str,
+        assay_names: list[str],
+        category_map: dict[str, MethodCategory],
+        assay_skeletons: dict[str, list[str]],
+        methods_text: str,
+        paper: Paper,
+        figure_context: dict[str, str],
+        code_refs: list[str],
+        grounded_accessions: list[str],
+    ) -> tuple[Assay, list[str]]:
+        method_cat = category_map.get(assay_name, MethodCategory.computational)
+        try:
+            retrieval_hits = self._iterative_retrieval_loop(
+                assay_name=assay_name,
+                skeleton_stages=assay_skeletons.get(assay_name) or self._default_stages_for_assay(assay_name),
+            )
+            assay_context = self._render_retrieved_context(retrieval_hits, max_chars=5000)
+            assay = self._parse_assay(
+                assay_name,
+                methods_text,
+                paper,
+                figure_context,
+                assay_names=assay_names,
+                method_category=method_cat,
+                assay_context=assay_context or None,
+            )
+            assay = self._apply_code_references(assay, code_refs)
+            assay = self._sanitize_assay_data_source(assay, grounded_accessions)
+            return assay, []
+        except Exception as exc:
+            msg = f"assay_stub: {assay_name!r} could not be parsed ({type(exc).__name__}: {exc})"
+            logger.warning(msg)
+            paragraph = _extract_assay_paragraph(
+                methods_text,
+                assay_name,
+                assay_names=assay_names,
+            )
+            fallback = _fallback_assay_from_text(
+                assay_name=assay_name,
+                paragraph=paragraph,
+                method_category=method_cat,
+            )
+            return (
+                fallback.model_copy(update={"description": "Could not be parsed."}),
+                [msg],
+            )
 
     def _ensure_data_availability_text(
         self,

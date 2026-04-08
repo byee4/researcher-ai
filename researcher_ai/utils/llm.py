@@ -24,6 +24,7 @@ import logging
 import os
 import base64
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional, TypeVar
 
@@ -88,6 +89,18 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS: float = float(
     )
 )
 DEFAULT_MODEL: str = os.environ.get("RESEARCHER_AI_MODEL", "gpt-5.4")
+
+
+@contextmanager
+def temporary_request_timeout(timeout_seconds: float):
+    """Temporarily override global request timeout for nested LLM calls."""
+    global DEFAULT_REQUEST_TIMEOUT_SECONDS
+    previous = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    DEFAULT_REQUEST_TIMEOUT_SECONDS = float(timeout_seconds)
+    try:
+        yield
+    finally:
+        DEFAULT_REQUEST_TIMEOUT_SECONDS = previous
 
 # Maximum raw bytes allowed per image in a multimodal call.
 # Configurable via env var (bytes) or models.yaml defaults.max_image_bytes.
