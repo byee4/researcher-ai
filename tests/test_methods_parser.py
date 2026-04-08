@@ -184,6 +184,44 @@ def test_methods_parser_init_respects_env_round_cap(monkeypatch, tmp_path):
     assert parser.max_retrieval_refinement_rounds == 1
 
 
+def test_parse_emits_paper_rag_vision_fallback_warning(monkeypatch):
+    parser = MethodsParser.__new__(MethodsParser)
+    parser.llm_model = "test-model"
+    parser.cache = None
+    parser.protocol_rag = object()
+    parser.assay_parse_concurrency = 1
+    parser.assay_parse_base_timeout_seconds = 90.0
+    parser.max_retrieval_refinement_rounds = 2
+
+    class _StubPaperRAG:
+        vision_fallback_count = 2
+        vision_fallback_latency_seconds = 1.234
+
+        def build_from(self, *, paper, figures):  # noqa: ARG002
+            return self
+
+    parser.paper_rag = _StubPaperRAG()
+
+    monkeypatch.setattr(parser, "_extract_methods_text", lambda paper, include_bioc=True: "methods")
+    monkeypatch.setattr(parser, "_find_availability_statements", lambda paper, methods_text: ("", ""))
+    monkeypatch.setattr(parser, "_ensure_data_availability_text", lambda paper, methods_text, current: current)
+    monkeypatch.setattr(parser, "_identify_assays", lambda methods_text: [])
+    monkeypatch.setattr(parser, "_canonicalize_assay_names", lambda paper, methods_text, names: names)
+    monkeypatch.setattr(parser, "_build_assay_skeletons", lambda assay_names, methods_text: {})
+    monkeypatch.setattr(parser, "_classify_assays", lambda assay_names, methods_text: {})
+    monkeypatch.setattr(parser, "_resolve_code_references", lambda code_avail, methods_text: ([], []))
+    monkeypatch.setattr(parser, "_collect_grounded_accessions", lambda paper, methods_text, data_avail: [])
+    monkeypatch.setattr(parser, "_identify_dependencies", lambda assay_names, methods_text: ([], []))
+    monkeypatch.setattr(
+        parser,
+        "_infer_missing_computational_parameters",
+        lambda assays, methods_text: (assays, []),
+    )
+
+    method = parser.parse(SAMPLE_PAPER, figures=[], computational_only=True)
+    assert any("paper_rag_vision_fallback:" in warning for warning in method.parse_warnings)
+
+
 def _make_step_meta(n: int = 1, **kwargs) -> _StepMeta:
     defaults = dict(
         step_number=n,

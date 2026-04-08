@@ -324,6 +324,13 @@ def _max_context_tokens_for_model(llm_model: str) -> Optional[int]:
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Best-effort 429 / rate-limit classification."""
+    try:
+        import litellm  # type: ignore[import]
+        rate_limit_cls = getattr(litellm, "RateLimitError", None)
+        if isinstance(rate_limit_cls, type) and isinstance(exc, rate_limit_cls):
+            return True
+    except Exception:
+        pass
     msg = str(exc).lower()
     cls = type(exc).__name__.lower()
     return (
@@ -336,6 +343,17 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 def _is_transient_provider_error(exc: Exception) -> bool:
     """Classify failover-eligible transient provider errors (5xx/network)."""
+    try:
+        import litellm  # type: ignore[import]
+        transient_classes = []
+        for name in ("APIConnectionError", "APIStatusError", "ServiceUnavailableError", "InternalServerError"):
+            cls = getattr(litellm, name, None)
+            if isinstance(cls, type):
+                transient_classes.append(cls)
+        if transient_classes and isinstance(exc, tuple(transient_classes)):
+            return True
+    except Exception:
+        pass
     msg = str(exc).lower()
     cls = type(exc).__name__.lower()
     status_code = getattr(exc, "status_code", None)

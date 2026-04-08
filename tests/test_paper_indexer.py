@@ -107,6 +107,8 @@ def test_malformed_table_triggers_fallback_path(monkeypatch, tmp_path: Path):
 
     assert calls, "Expected malformed table fallback to be called"
     assert any(c.chunk_type == ChunkType.TABLE and "--runThreadN" in c.text for c in store.chunks)
+    assert store.vision_fallback_count >= 1
+    assert store.vision_fallback_latency_seconds >= 0.0
 
 
 def test_table_only_parameter_retrieval_and_paper_first_merge():

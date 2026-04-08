@@ -404,6 +404,12 @@ class MethodsParser:
             paper_store = getattr(self, "paper_rag", None)
             if paper_store is not None:
                 paper_store.build_from(paper=paper, figures=figures or [])
+                if getattr(paper_store, "vision_fallback_count", 0) > 0:
+                    warnings.append(
+                        "paper_rag_vision_fallback: "
+                        f"count={paper_store.vision_fallback_count} "
+                        f"latency_seconds={paper_store.vision_fallback_latency_seconds:.3f}"
+                    )
         except Exception as exc:
             msg = f"paper_index_build_failed: {type(exc).__name__}: {exc}"
             logger.warning(msg)

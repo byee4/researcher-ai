@@ -18,6 +18,7 @@ dependencies = [
     "anthropic",
     "openai",
     "litellm",
+    "tenacity",
     "langgraph",
     "chromadb",
     "sentence-transformers",
