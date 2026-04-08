@@ -63,6 +63,8 @@ class WorkflowState(TypedDict, total=False):
     workflow_graph_validation_issues: list[GraphValidationIssue]
     method_validation_report: ValidationReport
     validation_blocked: bool
+    human_review_required: bool
+    human_review_summary: dict[str, Any]
     pipeline: Pipeline
     build_attempts: int
     max_build_attempts: int
@@ -304,10 +306,14 @@ class WorkflowOrchestrator:
     def _node_build_pipeline(self, state: WorkflowState) -> WorkflowState:
         self._require_state_keys(state, ["method"], node="build_pipeline")
         if state.get("validation_blocked", False):
+            report = state.get("method_validation_report")
+            summary = self._build_human_review_summary(report)
             return {
                 "build_attempts": int(state.get("build_attempts", 0)),
-                "progress": 91,
-                "stage": "validation_blocked",
+                "human_review_required": True,
+                "human_review_summary": summary,
+                "progress": 100,
+                "stage": "needs_human_review",
             }
         attempts = int(state.get("build_attempts", 0)) + 1
         pipeline = self.pipeline_builder.build(
@@ -345,3 +351,34 @@ class WorkflowOrchestrator:
         if attempts < max_attempts:
             return "build_pipeline"
         return "end"
+
+    def _build_human_review_summary(self, report: Optional[ValidationReport]) -> dict[str, Any]:
+        """Summarize blocked validation findings for explicit manual triage."""
+        if report is None:
+            return {
+                "reason": "validation_blocked",
+                "ungrounded_count": 0,
+                "ungrounded_fields": [],
+                "recommended_action": "Review extraction output manually before pipeline build.",
+            }
+        ungrounded_fields = [
+            verdict.field
+            for verdict in report.verdicts
+            if str(
+                getattr(
+                    getattr(verdict, "evidence_category", ""),
+                    "value",
+                    getattr(verdict, "evidence_category", ""),
+                )
+            )
+            == "ungrounded"
+        ]
+        return {
+            "reason": "validation_blocked",
+            "ungrounded_count": int(report.ungrounded_count),
+            "ungrounded_fields": ungrounded_fields,
+            "recommended_action": (
+                "Provide missing parameters manually or switch RESEARCHER_AI_BIOWORKFLOW_MODE=warn "
+                "to continue with flagged defaults."
+            ),
+        }

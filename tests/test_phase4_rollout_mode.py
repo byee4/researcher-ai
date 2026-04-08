@@ -82,6 +82,8 @@ def test_bioworkflow_mode_on_blocks_on_ungrounded(monkeypatch):
 
     monkeypatch.setattr(orch.pipeline_builder, "build", _build)
     state = orch.run("dummy", PaperSource.PMID)
-    assert state["stage"] == "validation_blocked"
+    assert state["stage"] == "needs_human_review"
+    assert state["human_review_required"] is True
+    assert state["human_review_summary"]["ungrounded_count"] == 1
+    assert state["human_review_summary"]["ungrounded_fields"] == ["a"]
     assert calls["n"] == 0
-
