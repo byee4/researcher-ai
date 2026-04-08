@@ -7,6 +7,7 @@ Phase 4 architecture:
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Optional, TypedDict
 
@@ -61,6 +62,7 @@ class WorkflowState(TypedDict, total=False):
     workflow_graph: WorkflowGraph
     workflow_graph_validation_issues: list[GraphValidationIssue]
     method_validation_report: ValidationReport
+    validation_blocked: bool
     pipeline: Pipeline
     build_attempts: int
     max_build_attempts: int
@@ -85,10 +87,32 @@ def _parse_dataset(accession: str) -> Optional[Dataset]:
     return None
 
 
+def _normalize_bioworkflow_mode(raw: Optional[str]) -> str:
+    """Normalize rollout mode for validation behavior."""
+    mode = (raw or "").strip().lower()
+    if not mode:
+        mode = os.environ.get("RESEARCHER_AI_BIOWORKFLOW_MODE", "warn").strip().lower()
+    aliases = {
+        "0": "off",
+        "false": "off",
+        "disabled": "off",
+        "legacy": "off",
+        "1": "on",
+        "true": "on",
+        "enabled": "on",
+        "strict": "on",
+        "warn+continue": "warn",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"off", "warn", "on"}:
+        return "warn"
+    return mode
+
+
 class WorkflowOrchestrator:
     """Agentic/stateful orchestrator for parsing + pipeline generation."""
 
-    def __init__(self, *, max_build_attempts: int = 2):
+    def __init__(self, *, max_build_attempts: int = 2, bioworkflow_mode: Optional[str] = None):
         self.paper_parser = PaperParser()
         self.figure_parser = FigureParser()
         self.methods_parser = MethodsParser()
@@ -96,6 +120,7 @@ class WorkflowOrchestrator:
         self.software_parser = SoftwareParser()
         self.pipeline_builder = PipelineBuilder()
         self.max_build_attempts = max_build_attempts
+        self.bioworkflow_mode = _normalize_bioworkflow_mode(bioworkflow_mode)
 
     def run(self, source: str, source_type: PaperSource) -> WorkflowState:
         initial: WorkflowState = {
@@ -129,8 +154,11 @@ class WorkflowOrchestrator:
         graph.add_edge("parse_methods", "parse_datasets")
         graph.add_edge("parse_datasets", "parse_software")
         graph.add_edge("parse_software", "build_workflow_graph")
-        graph.add_edge("build_workflow_graph", "validate_method")
-        graph.add_edge("validate_method", "build_pipeline")
+        if self.bioworkflow_mode == "off":
+            graph.add_edge("build_workflow_graph", "build_pipeline")
+        else:
+            graph.add_edge("build_workflow_graph", "validate_method")
+            graph.add_edge("validate_method", "build_pipeline")
         graph.add_conditional_edges(
             "build_pipeline",
             self._next_after_build_pipeline,
@@ -142,15 +170,17 @@ class WorkflowOrchestrator:
         return graph.compile()
 
     def _run_sequential(self, state: WorkflowState) -> WorkflowState:
-        for fn in (
+        nodes = [
             self._node_parse_paper,
             self._node_parse_figures,
             self._node_parse_methods,
             self._node_parse_datasets,
             self._node_parse_software,
             self._node_build_workflow_graph,
-            self._node_validate_method,
-        ):
+        ]
+        if self.bioworkflow_mode != "off":
+            nodes.append(self._node_validate_method)
+        for fn in nodes:
             state.update(fn(state))
         while True:
             state.update(self._node_build_pipeline(state))
@@ -237,6 +267,12 @@ class WorkflowOrchestrator:
 
     def _node_validate_method(self, state: WorkflowState) -> WorkflowState:
         self._require_state_keys(state, ["method"], node="validate_method")
+        if self.bioworkflow_mode == "off":
+            return {
+                "progress": 90,
+                "stage": "validation_skipped",
+                "validation_blocked": False,
+            }
         method = state["method"]
         report = self.validation_agent.validate(
             method=method,
@@ -251,15 +287,28 @@ class WorkflowOrchestrator:
                 "parse_warnings": warnings,
             }
         )
+        validation_blocked = self.bioworkflow_mode == "on" and report.ungrounded_count > 0
+        if validation_blocked:
+            warnings.append(
+                f"bioworkflow_blocked: ungrounded_fields={report.ungrounded_count} mode=on"
+            )
+            updated_method = updated_method.model_copy(update={"parse_warnings": warnings})
         return {
             "method": updated_method,
             "method_validation_report": report,
+            "validation_blocked": validation_blocked,
             "progress": 90,
             "stage": "validated_method",
         }
 
     def _node_build_pipeline(self, state: WorkflowState) -> WorkflowState:
         self._require_state_keys(state, ["method"], node="build_pipeline")
+        if state.get("validation_blocked", False):
+            return {
+                "build_attempts": int(state.get("build_attempts", 0)),
+                "progress": 91,
+                "stage": "validation_blocked",
+            }
         attempts = int(state.get("build_attempts", 0)) + 1
         pipeline = self.pipeline_builder.build(
             state["method"],
@@ -283,6 +332,8 @@ class WorkflowOrchestrator:
         }
 
     def _next_after_build_pipeline(self, state: WorkflowState) -> str:
+        if state.get("validation_blocked", False):
+            return "end"
         pipeline = state.get("pipeline")
         if pipeline is None:
             return "end"
