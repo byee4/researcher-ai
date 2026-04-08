@@ -14,6 +14,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
@@ -27,6 +28,7 @@ from researcher_ai.utils.llm import (
     _safety_settings_for_model,
     _validate_image_sizes,
     extract_structured_data,
+    generate_text_stream,
     generate_text,
     MODEL_ALIAS_MAP,
     TokenLimitExceededError,
@@ -465,6 +467,7 @@ def test_extract_structured_data_propagates_rate_limit_error(monkeypatch):
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr("researcher_ai.utils.llm.time.sleep", lambda *_args, **_kwargs: None)
 
     with pytest.raises(RateLimitError, match="Rate limit"):
         extract_structured_data("gpt-5.4", "prompt", _Out)
@@ -486,9 +489,13 @@ def test_generate_text_falls_back_on_rate_limit(monkeypatch):
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr("researcher_ai.utils.llm.time.sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "researcher_ai.utils.llm._MODEL_CONFIG",
-        {"fallbacks": {"gpt-5.4": ["claude-4.6-opus"]}},
+        {
+            "fallbacks": {"gpt-5.4": ["claude-4.6-opus"]},
+            "retry": {"rate_limit_max_retries": 0},
+        },
     )
 
     out = generate_text("gpt-5.4", "hello")
@@ -512,9 +519,13 @@ def test_extract_structured_data_falls_back_on_rate_limit(monkeypatch):
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr("researcher_ai.utils.llm.time.sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "researcher_ai.utils.llm._MODEL_CONFIG",
-        {"fallbacks": {"gpt-5.4": ["claude-4.6-opus"]}},
+        {
+            "fallbacks": {"gpt-5.4": ["claude-4.6-opus"]},
+            "retry": {"rate_limit_max_retries": 0},
+        },
     )
 
     out = extract_structured_data("gpt-5.4", "prompt", _Out)
@@ -552,6 +563,110 @@ def test_token_preflight_raises_before_api_call(monkeypatch):
     with pytest.raises(TokenLimitExceededError, match="Token budget exceeded"):
         extract_structured_data("gpt-5.4", "prompt", _Out, max_tokens=50)
     assert not api_called, "Completion call should not execute after preflight failure"
+
+
+def test_api_status_500_triggers_immediate_failover(monkeypatch):
+    """APIStatusError/5xx should fail over without rate-limit backoff retries."""
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    class APIStatusError(Exception):
+        def __init__(self, msg: str, status_code: int):
+            super().__init__(msg)
+            self.status_code = status_code
+
+    def _completion(**kwargs):
+        model = kwargs["model"]
+        calls.append(model)
+        if model == "openai/gpt-5.4":
+            raise APIStatusError("Internal Server Error", 500)
+        return _DummyResponse(json.dumps({"value": "ok"}))
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr("researcher_ai.utils.llm.time.sleep", lambda s: sleeps.append(float(s)))
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._MODEL_CONFIG",
+        {
+            "fallbacks": {"gpt-5.4": ["claude-4.6-opus"]},
+            "retry": {"rate_limit_max_retries": 3},
+        },
+    )
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "ok"
+    assert calls[:2] == ["openai/gpt-5.4", "anthropic/claude-4.6-opus"]
+    assert sleeps == []
+
+
+def test_token_preflight_trim_oldest_strategy_preserves_recent_instruction(monkeypatch):
+    """trim_oldest strategy should trim older context and still dispatch successfully."""
+    captured_user_texts: list[str] = []
+
+    def _completion(**kwargs):
+        msgs = kwargs.get("messages", [])
+        first_user = next((m for m in msgs if m.get("role") == "user"), {})
+        first_content = first_user.get("content", "")
+        if isinstance(first_content, str):
+            captured_user_texts.append(first_content)
+        return _DummyResponse(json.dumps({"value": "trim-ok"}))
+
+    def _token_counter(*, model, messages):  # noqa: ARG001
+        total_chars = 0
+        for m in messages:
+            c = m.get("content")
+            if isinstance(c, str):
+                total_chars += len(c)
+            elif isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        total_chars += len(part["text"])
+        return max(1, total_chars // 4)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        types.SimpleNamespace(completion=_completion, token_counter=_token_counter),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._PROVIDER_CONFIG",
+        {
+            "openai": {
+                "api_key_envs": ["OPENAI_API_KEY", "LLM_API_KEY"],
+                "max_context_tokens": 340,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._DEFAULTS",
+        {"token_overflow_strategy": "trim_oldest"},
+    )
+
+    long_prompt = "OLD_CONTEXT_" * 80 + "RECENT_INSTRUCTION_KEEP"
+    out = extract_structured_data("gpt-5.4", long_prompt, _Out, max_tokens=20)
+    assert out.value == "trim-ok"
+    assert captured_user_texts
+    assert "RECENT_INSTRUCTION_KEEP" in captured_user_texts[0]
+
+
+def test_generate_text_stream_normalizes_chunks(monkeypatch):
+    """Streaming interface should normalize provider deltas into LLMStreamChunk list."""
+    events = [
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Hello "))]),
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="world"))]),
+    ]
+
+    def _completion(**kwargs):
+        assert kwargs.get("stream") is True
+        return iter(events)
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    chunks = generate_text_stream("gpt-5.4", "Say hello")
+    assert [c.text for c in chunks[:-1]] == ["Hello ", "world"]
+    assert chunks[-1].done is True
 
 
 def test_generate_text_propagates_api_error(monkeypatch):

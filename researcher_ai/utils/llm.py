@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import base64
+import time
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional, TypeVar
 
@@ -35,6 +36,13 @@ T = TypeVar("T", bound=BaseModel)
 
 class TokenLimitExceededError(ValueError):
     """Raised when prompt/input tokens exceed configured context window."""
+
+
+class LLMStreamChunk(BaseModel):
+    """Unified streaming chunk payload across providers."""
+
+    text: str = ""
+    done: bool = False
 
 # ---------------------------------------------------------------------------
 # Config loading — reads researcher_ai/config/models.yaml once at import time
@@ -115,6 +123,10 @@ _PROVIDER_CONFIG: dict[str, Any] = _MODEL_CONFIG.get("providers", {})
 def _provider_cfg(provider: str) -> dict[str, Any]:
     """Return the config block for a specific provider (empty dict if absent)."""
     return _PROVIDER_CONFIG.get(provider, {})
+
+
+def _retry_cfg() -> dict[str, Any]:
+    return _MODEL_CONFIG.get("retry", {})
 
 
 def _fallback_chain_for_model_router(model_router: str) -> list[str]:
@@ -309,31 +321,151 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     )
 
 
+def _is_transient_provider_error(exc: Exception) -> bool:
+    """Classify failover-eligible transient provider errors (5xx/network)."""
+    msg = str(exc).lower()
+    cls = type(exc).__name__.lower()
+    status_code = getattr(exc, "status_code", None)
+    try:
+        if status_code is not None and int(status_code) >= 500:
+            return True
+    except Exception:
+        pass
+    return (
+        "apiconnectionerror" in cls
+        or "serviceunavailable" in cls
+        or "internalservererror" in cls
+        or "apistatuserror" in cls
+        or "bad gateway" in msg
+        or "gateway timeout" in msg
+        or "service unavailable" in msg
+        or " 500" in msg
+        or " 502" in msg
+        or " 503" in msg
+        or " 504" in msg
+    )
+
+
+def _rate_limit_retry_limit() -> int:
+    raw = _retry_cfg().get("rate_limit_max_retries", 2)
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 2
+
+
+def _rate_limit_backoff_seconds(attempt_index: int) -> float:
+    cfg = _retry_cfg()
+    base = float(cfg.get("rate_limit_backoff_base_seconds", 0.6))
+    cap = float(cfg.get("rate_limit_backoff_cap_seconds", 8.0))
+    # Exponential backoff without jitter keeps tests deterministic.
+    return min(cap, base * (2 ** max(0, attempt_index)))
+
+
+def _token_overflow_strategy() -> str:
+    return str(_DEFAULTS.get("token_overflow_strategy", "raise")).strip().lower()
+
+
+def _token_count_for_messages(llm_model: str, messages: list[dict[str, Any]]) -> Optional[int]:
+    try:
+        from litellm import token_counter  # type: ignore[import]
+    except Exception:
+        return None
+    try:
+        return int(token_counter(model=llm_model, messages=messages))
+    except Exception:
+        return None
+
+
+def _truncate_text_preserving_tail(value: str, *, remove_chars: int) -> str:
+    if remove_chars <= 0 or not value:
+        return value
+    if remove_chars >= len(value):
+        # Keep at least a small tail.
+        return value[-120:] if len(value) > 120 else value
+    return value[remove_chars:]
+
+
+def _truncate_oldest_message_content(messages: list[dict[str, Any]], *, remove_chars: int) -> bool:
+    """Trim oldest non-system/non-final message content from the front."""
+    if len(messages) < 2:
+        return False
+    # Preserve system (typically index 0) and the most recent instruction (last message).
+    candidate_indices = [
+        i for i in range(1, len(messages) - 1)
+        if isinstance(messages[i], dict)
+    ]
+    if not candidate_indices:
+        return False
+    idx = candidate_indices[0]
+    msg = messages[idx]
+    content = msg.get("content")
+    if isinstance(content, str):
+        msg["content"] = _truncate_text_preserving_tail(content, remove_chars=remove_chars)
+        return True
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                part["text"] = _truncate_text_preserving_tail(
+                    part.get("text", ""),
+                    remove_chars=remove_chars,
+                )
+                return True
+    return False
+
+
 def _preflight_token_budget(
     *,
     llm_model: str,
     messages: list[dict[str, Any]],
     max_output_tokens: int,
-) -> None:
-    """Fail fast when configured context budget would be exceeded."""
+) -> list[dict[str, Any]]:
+    """Apply token budget strategy before dispatch, returning possibly-trimmed messages."""
     context_limit = _max_context_tokens_for_model(llm_model)
     if not context_limit:
-        return
-    try:
-        from litellm import token_counter  # type: ignore[import]
-    except Exception:
-        return
-    try:
-        input_tokens = int(token_counter(model=llm_model, messages=messages))
-    except Exception:
-        return
-    total = input_tokens + int(max_output_tokens)
-    if total > context_limit:
+        return messages
+    counted = _token_count_for_messages(llm_model, messages)
+    if counted is None:
+        return messages
+    total = counted + int(max_output_tokens)
+    if total <= context_limit:
+        return messages
+
+    strategy = _token_overflow_strategy()
+    if strategy not in {"trim_oldest", "raise"}:
+        strategy = "raise"
+    if strategy == "raise":
         raise TokenLimitExceededError(
             f"Token budget exceeded for model '{llm_model}': "
-            f"input={input_tokens}, requested_output={int(max_output_tokens)}, "
+            f"input={counted}, requested_output={int(max_output_tokens)}, "
             f"total={total} > max_context_tokens={context_limit}."
         )
+
+    adjusted = json.loads(json.dumps(messages))
+    max_rounds = 6
+    for _ in range(max_rounds):
+        overflow = (counted + int(max_output_tokens)) - context_limit
+        if overflow <= 0:
+            return adjusted
+        # Approximate chars-to-token conversion.
+        removed = _truncate_oldest_message_content(
+            adjusted,
+            remove_chars=max(160, overflow * 5),
+        )
+        if not removed:
+            break
+        recounted = _token_count_for_messages(llm_model, adjusted)
+        if recounted is None:
+            return adjusted
+        counted = recounted
+    total = counted + int(max_output_tokens)
+    if total > context_limit:
+        raise TokenLimitExceededError(
+            f"Token budget exceeded for model '{llm_model}' after trim_oldest strategy: "
+            f"input={counted}, requested_output={int(max_output_tokens)}, "
+            f"total={total} > max_context_tokens={context_limit}."
+        )
+    return adjusted
 
 
 # ---------------------------------------------------------------------------
@@ -412,28 +544,48 @@ def generate_text(
         normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
         try:
             api_key = _resolve_api_key_for_model_router(candidate_router)
-            _preflight_token_budget(
+            candidate_messages = _preflight_token_budget(
                 llm_model=llm_model,
                 messages=messages,
                 max_output_tokens=normalized_max_tokens,
             )
-            response = _litellm_completion(
-                model=llm_model,
-                messages=messages,
-                max_tokens=normalized_max_tokens,
-                temperature=normalized_temperature,
-                api_key=api_key,
-                timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-            )
-            active_llm_model = llm_model
-            break
+            retry_limit = _rate_limit_retry_limit()
+            for attempt in range(retry_limit + 1):
+                try:
+                    response = _litellm_completion(
+                        model=llm_model,
+                        messages=candidate_messages,
+                        max_tokens=normalized_max_tokens,
+                        temperature=normalized_temperature,
+                        api_key=api_key,
+                        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                    )
+                    active_llm_model = llm_model
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if _is_rate_limit_error(exc) and attempt < retry_limit:
+                        sleep_s = _rate_limit_backoff_seconds(attempt)
+                        logger.warning(
+                            "Rate limit on %s (attempt %d/%d). Backing off %.2fs.",
+                            llm_model,
+                            attempt + 1,
+                            retry_limit + 1,
+                            sleep_s,
+                        )
+                        time.sleep(sleep_s)
+                        continue
+                    raise
+            if response is not None:
+                break
         except Exception as exc:
             last_exc = exc
-            if idx < len(model_chain) - 1 and _is_rate_limit_error(exc):
+            if idx < len(model_chain) - 1 and (_is_rate_limit_error(exc) or _is_transient_provider_error(exc)):
                 logger.warning(
-                    "Rate limit for model %s; retrying with fallback model %s",
+                    "Failing over from %s to %s after %s",
                     llm_model,
                     _normalize_model_router_for_litellm(model_chain[idx + 1]),
+                    type(exc).__name__,
                 )
                 continue
             raise
@@ -445,6 +597,51 @@ def generate_text(
     if active_llm_model != primary_llm_model:
         logger.info("generate_text used fallback model %s for primary %s", active_llm_model, primary_llm_model)
     return text
+
+
+def generate_text_stream(
+    model_router: str,
+    prompt: str,
+    *,
+    system: str = "",
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = 0.0,
+) -> list[LLMStreamChunk]:
+    """Provider-agnostic streaming text generation with normalized chunks.
+
+    Returns a list of `LLMStreamChunk` so callers can consume one normalized
+    payload shape regardless of provider.
+    """
+    llm_model = _normalize_model_router_for_litellm(model_router)
+    normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
+    normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+    api_key = _resolve_api_key_for_model_router(model_router)
+    messages: list[dict[str, Any]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    stream = _litellm_completion(
+        model=llm_model,
+        messages=messages,
+        max_tokens=normalized_max_tokens,
+        temperature=normalized_temperature,
+        api_key=api_key,
+        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        stream=True,
+    )
+    chunks: list[LLMStreamChunk] = []
+    for event in stream:
+        try:
+            delta = event.choices[0].delta
+            text = getattr(delta, "content", None)
+            if text is None and isinstance(delta, dict):
+                text = delta.get("content")
+        except Exception:
+            text = None
+        if isinstance(text, str) and text:
+            chunks.append(LLMStreamChunk(text=text, done=False))
+    chunks.append(LLMStreamChunk(text="", done=True))
+    return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -546,9 +743,14 @@ def extract_structured_data(
         normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
         try:
             api_key = _resolve_api_key_for_model_router(candidate_router)
+            candidate_messages = _preflight_token_budget(
+                llm_model=llm_model,
+                messages=messages,
+                max_output_tokens=normalized_max_tokens,
+            )
             kwargs: dict[str, Any] = {
                 "model": llm_model,
-                "messages": messages,
+                "messages": candidate_messages,
                 "max_tokens": normalized_max_tokens,
                 "temperature": normalized_temperature,
                 "api_key": api_key,
@@ -558,39 +760,55 @@ def extract_structured_data(
             safety = _safety_settings_for_model(llm_model)
             if safety:
                 kwargs["safety_settings"] = safety
-            _preflight_token_budget(
-                llm_model=llm_model,
-                messages=messages,
-                max_output_tokens=normalized_max_tokens,
-            )
-            try:
-                response = _litellm_completion(
-                    **kwargs,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": schema.__name__ or "ExtractionSchema",
-                            "strict": True,
-                            "schema": strict_schema,
-                        },
-                    },
-                )
-            except Exception as exc:
-                msg = str(exc).lower()
-                if "response_format" in msg or "schema" in msg or "unsupported" in msg:
+            retry_limit = _rate_limit_retry_limit()
+            response = None
+            for attempt in range(retry_limit + 1):
+                try:
                     try:
                         response = _litellm_completion(
                             **kwargs,
-                            response_format={"type": "json_object"},
+                            response_format={
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": schema.__name__ or "ExtractionSchema",
+                                    "strict": True,
+                                    "schema": strict_schema,
+                                },
+                            },
                         )
-                    except Exception as inner_exc:
-                        inner_msg = str(inner_exc).lower()
-                        if not llm_model.startswith("gemini/") and "response_format" in inner_msg:
-                            response = _litellm_completion(**kwargs)
+                    except Exception as exc:
+                        msg = str(exc).lower()
+                        if "response_format" in msg or "schema" in msg or "unsupported" in msg:
+                            try:
+                                response = _litellm_completion(
+                                    **kwargs,
+                                    response_format={"type": "json_object"},
+                                )
+                            except Exception as inner_exc:
+                                inner_msg = str(inner_exc).lower()
+                                if not llm_model.startswith("gemini/") and "response_format" in inner_msg:
+                                    response = _litellm_completion(**kwargs)
+                                else:
+                                    raise inner_exc
                         else:
-                            raise inner_exc
-                else:
-                    raise exc
+                            raise exc
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if _is_rate_limit_error(exc) and attempt < retry_limit:
+                        sleep_s = _rate_limit_backoff_seconds(attempt)
+                        logger.warning(
+                            "Rate limit on %s (attempt %d/%d). Backing off %.2fs.",
+                            llm_model,
+                            attempt + 1,
+                            retry_limit + 1,
+                            sleep_s,
+                        )
+                        time.sleep(sleep_s)
+                        continue
+                    raise
+            if response is None:
+                raise last_exc or RuntimeError("No response returned from structured extraction.")
 
             text = _strip_json_fences(_extract_message_text(response))
             if not text:
@@ -631,11 +849,12 @@ def extract_structured_data(
             return result
         except Exception as exc:
             last_exc = exc
-            if idx < len(model_chain) - 1 and _is_rate_limit_error(exc):
+            if idx < len(model_chain) - 1 and (_is_rate_limit_error(exc) or _is_transient_provider_error(exc)):
                 logger.warning(
-                    "Rate limit for model %s; retrying structured extraction with fallback %s",
+                    "Failing over structured extraction from %s to %s after %s",
                     llm_model,
                     _normalize_model_router_for_litellm(model_chain[idx + 1]),
+                    type(exc).__name__,
                 )
                 continue
             raise
@@ -679,26 +898,47 @@ def extract_structured_data_with_tools(
         try:
             api_key = _resolve_api_key_for_model_router(candidate_router)
             safety = _safety_settings_for_model(llm_model)
+            retry_limit = _rate_limit_retry_limit()
 
             for _ in range(max_tool_rounds):
-                _preflight_token_budget(
+                candidate_messages = _preflight_token_budget(
                     llm_model=llm_model,
                     messages=messages,
                     max_output_tokens=normalized_max_tokens,
                 )
-                call_kwargs: dict[str, Any] = {
-                    "model": llm_model,
-                    "messages": messages,
-                    "tools": tools,
-                    "tool_choice": "auto",
-                    "max_tokens": normalized_max_tokens,
-                    "temperature": normalized_temperature,
-                    "api_key": api_key,
-                    "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
-                }
-                if safety:
-                    call_kwargs["safety_settings"] = safety
-                response = _litellm_completion(**call_kwargs)
+                response = None
+                for attempt in range(retry_limit + 1):
+                    try:
+                        call_kwargs: dict[str, Any] = {
+                            "model": llm_model,
+                            "messages": candidate_messages,
+                            "tools": tools,
+                            "tool_choice": "auto",
+                            "max_tokens": normalized_max_tokens,
+                            "temperature": normalized_temperature,
+                            "api_key": api_key,
+                            "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                        }
+                        if safety:
+                            call_kwargs["safety_settings"] = safety
+                        response = _litellm_completion(**call_kwargs)
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if _is_rate_limit_error(exc) and attempt < retry_limit:
+                            sleep_s = _rate_limit_backoff_seconds(attempt)
+                            logger.warning(
+                                "Rate limit on %s (attempt %d/%d). Backing off %.2fs.",
+                                llm_model,
+                                attempt + 1,
+                                retry_limit + 1,
+                                sleep_s,
+                            )
+                            time.sleep(sleep_s)
+                            continue
+                        raise
+                if response is None:
+                    raise last_exc or RuntimeError("No response returned from tool extraction.")
                 msg = response.choices[0].message
                 tool_calls = getattr(msg, "tool_calls", None) or []
                 if not tool_calls:
@@ -753,14 +993,14 @@ def extract_structured_data_with_tools(
                     )
 
             # Fallback after exhausting tool rounds.
-            _preflight_token_budget(
+            candidate_messages = _preflight_token_budget(
                 llm_model=llm_model,
                 messages=messages,
                 max_output_tokens=normalized_max_tokens,
             )
             final_kwargs: dict[str, Any] = {
                 "model": llm_model,
-                "messages": messages,
+                "messages": candidate_messages,
                 "max_tokens": normalized_max_tokens,
                 "temperature": normalized_temperature,
                 "api_key": api_key,
@@ -779,11 +1019,12 @@ def extract_structured_data_with_tools(
             return schema.model_validate_json(text)
         except Exception as exc:
             last_exc = exc
-            if idx < len(model_chain) - 1 and _is_rate_limit_error(exc):
+            if idx < len(model_chain) - 1 and (_is_rate_limit_error(exc) or _is_transient_provider_error(exc)):
                 logger.warning(
-                    "Rate limit for model %s; retrying tool extraction with fallback %s",
+                    "Failing over tool extraction from %s to %s after %s",
                     llm_model,
                     _normalize_model_router_for_litellm(model_chain[idx + 1]),
+                    type(exc).__name__,
                 )
                 continue
             raise
