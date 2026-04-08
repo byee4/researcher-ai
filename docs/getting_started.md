@@ -55,6 +55,8 @@ You should see staged progress logs and an output JSON with:
 - `method`
 - `datasets`
 - `software`
+- `workflow_graph`
+- `workflow_graph_validation_issues`
 - `pipeline`
 
 ## 4. Build docs

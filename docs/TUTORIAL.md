@@ -55,6 +55,8 @@ Expected top-level keys:
 - `method`
 - `datasets`
 - `software`
+- `workflow_graph`
+- `workflow_graph_validation_issues`
 - `pipeline`
 - `dataset_parse_errors`
 

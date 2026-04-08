@@ -12,6 +12,7 @@ researcher-ai Documentation
    configuration
    cli
    ARCHITECTURE
+   WORKFLOW_GRAPH_IR_PLAN
    development
    readthedocs
 

@@ -15,6 +15,17 @@ Arguments:
 
 The script emits progress lines and writes one consolidated JSON payload.
 
+Output top-level keys:
+- `paper`
+- `figures`
+- `method`
+- `datasets`
+- `software`
+- `workflow_graph`
+- `workflow_graph_validation_issues`
+- `pipeline`
+- `dataset_parse_errors`
+
 ## Calibration and benchmarking scripts
 
 ## Figure calibration report
@@ -24,6 +35,10 @@ python scripts/figure_calibration_report.py
 ```
 
 Generates aggregate calibration metrics from fixtures in `tests/fixtures/figure_calibration/`.
+
+Common options:
+- `--fixtures-dir`: override fixture directory (default `tests/fixtures/figure_calibration`)
+- `--registry`: optional calibration registry YAML path
 
 ## BioC confidence benchmark
 
