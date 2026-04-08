@@ -1,0 +1,15 @@
+assay_type: variant_calling
+required_stages:
+  - qc
+  - trim
+  - align
+  - call
+  - filter
+  - annotate
+required_fields_by_stage:
+  call:
+    - software
+    - parameters
+critical_fields:
+  - software
+  - parameters

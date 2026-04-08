@@ -130,6 +130,45 @@ class AssayGraph(BaseModel):
         ]
 
 
+class EvidenceCategory(str, Enum):
+    """Evidence quality level for a validated method field."""
+
+    stated_in_paper = "stated_in_paper"
+    inferred_default = "inferred_default"
+    inferred_from_protocol = "inferred_from_protocol"
+    ungrounded = "ungrounded"
+
+
+class ValidationVerdict(BaseModel):
+    """Validation outcome for one extracted field."""
+
+    field: str
+    claimed_value: str
+    evidence_category: EvidenceCategory
+    evidence_source: Optional[str] = None
+    action: str
+    rationale: str = ""
+
+
+class ValidationReport(BaseModel):
+    """Aggregate validation output for a parsed Method."""
+
+    verdicts: list[ValidationVerdict] = Field(default_factory=list)
+    ungrounded_count: int = 0
+    inferred_default_count: int = 0
+    total_fields_checked: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AssayTemplate(BaseModel):
+    """Template prior used to check expected assay-stage coverage."""
+
+    assay_type: str
+    required_stages: list[str] = Field(default_factory=list)
+    required_fields_by_stage: dict[str, list[str]] = Field(default_factory=dict)
+    critical_fields: list[str] = Field(default_factory=list)
+
+
 class Method(BaseModel):
     """Complete parsed methodology for a paper."""
 
@@ -151,6 +190,10 @@ class Method(BaseModel):
             "reasons, dropped dependency edges, and unresolved assay names. "
             "An empty list means the parse completed without degraded results."
         ),
+    )
+    validation_report: Optional[ValidationReport] = Field(
+        default=None,
+        description="Optional evidence-grounding report for extracted method fields.",
     )
 
     # Convenience accessor kept for backward compatibility

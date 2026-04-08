@@ -342,7 +342,7 @@ class FigureParser:
         self,
         llm_model: str = llm_utils.DEFAULT_MODEL,
         cache_dir: Optional[str] = None,
-        vision_model: str = "gemini-3.1-pro",
+        vision_model: str = "primary-vision",
         cache: Optional[LLMCache] = None,
         calibration_engine: Optional[FigureCalibrationEngine] = None,
     ):
