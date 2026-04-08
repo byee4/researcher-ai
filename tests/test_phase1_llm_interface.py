@@ -20,6 +20,8 @@ import pytest
 from pydantic import BaseModel
 
 from researcher_ai.utils.llm import (
+    _is_rate_limit_error,
+    _is_transient_provider_error,
     _infer_provider_from_model_router,
     _normalize_max_tokens_for_model,
     _normalize_model_router_for_litellm,
@@ -471,6 +473,30 @@ def test_extract_structured_data_propagates_rate_limit_error(monkeypatch):
 
     with pytest.raises(RateLimitError, match="Rate limit"):
         extract_structured_data("gpt-5.4", "prompt", _Out)
+
+
+def test_rate_limit_classifier_supports_litellm_unified_exception(monkeypatch):
+    class RateLimitError(Exception):
+        pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        types.SimpleNamespace(RateLimitError=RateLimitError),
+    )
+    assert _is_rate_limit_error(RateLimitError("too many requests")) is True
+
+
+def test_transient_classifier_supports_litellm_unified_exception(monkeypatch):
+    class APIConnectionError(Exception):
+        pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        types.SimpleNamespace(APIConnectionError=APIConnectionError),
+    )
+    assert _is_transient_provider_error(APIConnectionError("network down")) is True
 
 
 def test_generate_text_falls_back_on_rate_limit(monkeypatch):

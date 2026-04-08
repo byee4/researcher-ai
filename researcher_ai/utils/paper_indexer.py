@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -61,10 +62,20 @@ class PaperRAGStore:
         self._chroma = None
         self._embedder = None
         self._collection_name = f"paper_{uuid.uuid4().hex[:12]}"
+        self._vision_fallback_count = 0
+        self._vision_fallback_latency_seconds = 0.0
 
     @property
     def chunks(self) -> list[AnnotatedChunk]:
         return [c.chunk for c in self._chunks]
+
+    @property
+    def vision_fallback_count(self) -> int:
+        return int(self._vision_fallback_count)
+
+    @property
+    def vision_fallback_latency_seconds(self) -> float:
+        return float(self._vision_fallback_latency_seconds)
 
     def build_from(
         self,
@@ -73,6 +84,8 @@ class PaperRAGStore:
         figures: Optional[list[Figure]] = None,
     ) -> "PaperRAGStore":
         """Build/rebuild the in-memory index for one paper parse context."""
+        self._vision_fallback_count = 0
+        self._vision_fallback_latency_seconds = 0.0
         raw_chunks = self._collect_chunks(paper=paper, figures=figures or [])
         indexed: list[_IndexedChunk] = []
         for chunk in raw_chunks:
@@ -174,11 +187,14 @@ class PaperRAGStore:
                     normalized = block.strip()
                     chunk_type = ChunkType.TABLE if _is_valid_markdown_table(normalized) else ChunkType.PROSE
                     if chunk_type != ChunkType.TABLE:
+                        started = time.perf_counter()
                         recovered = self._recover_table_chunk_with_vision(
                             malformed_table_text=normalized,
                             source_pdf=source_pdf,
                             section_title=section_title,
                         )
+                        self._vision_fallback_latency_seconds += max(0.0, time.perf_counter() - started)
+                        self._vision_fallback_count += 1
                         if recovered:
                             normalized = recovered
                             chunk_type = ChunkType.TABLE
