@@ -2,6 +2,11 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-07
+- Adopted canonical architecture-planning document: `docs/WORKFLOW_GRAPH_IR_PLAN.md`.
+- Marked `docs/previous/development/architecture/V2_ARCHITECTURE_PLAN.md` as deprecated (planning authority moved to IR plan).
+- Marked `docs/previous/development/architecture/researcher-ai_architecture_review.md` as deprecated historical context.
+
 ## Architecture, Evaluation, Calibration, Improvement
 - **BioC Integration Plan for Parsing Utilities** (BIOC_INTEGRATION_PLAN.md)
 - **Architecture Evaluation: researcher-ai** (EVALUATION_ARCHITECTURE.md)

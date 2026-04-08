@@ -16,6 +16,7 @@ Full docs (including tutorial and API reference) live in `docs/` and are set up 
 
 - Docs index: `docs/index.rst`
 - Architecture: `docs/ARCHITECTURE.md`
+- Canonical IR planning roadmap: `docs/WORKFLOW_GRAPH_IR_PLAN.md`
 - Full tutorial: `docs/TUTORIAL.md`
 - RTD deployment guide: `docs/readthedocs.md`
 

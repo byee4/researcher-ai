@@ -48,11 +48,15 @@ from researcher_ai.parsers.methods_parser import (
     _StepMeta,
     _assay_from_meta,
     _build_figure_context,
+    _compress_methods_for_identification,
     _extract_assay_paragraph,
     _extract_assay_block_by_heading,
     _extract_dataset_accessions,
     _extract_github_urls,
+    _extract_heading_like_lines,
     _extract_section_by_heading,
+    _first_n_sentences,
+    _merge_heading_and_llm_assays,
     _normalize_assay_name,
     _METHODS_TITLE_RE,
 )
@@ -511,8 +515,13 @@ class TestIdentifyAssays:
         ])
         parser = _make_parser()
         names = parser._identify_assays(SAMPLE_METHODS_TEXT)
+        # Core LLM-identified assays must be present.
         assert "Read alignment" in names
-        assert len(names) == 3
+        assert "Peak calling" in names
+        # Heading-derived names may also be merged in, so the count may
+        # exceed 3.  The critical invariant is that the LLM results are
+        # included and appear first.
+        assert len(names) >= 3
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_empty_text_returns_empty_no_llm(self, mock_llm):
@@ -522,11 +531,18 @@ class TestIdentifyAssays:
         mock_llm.assert_not_called()
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
-    def test_llm_failure_returns_empty(self, mock_llm):
+    def test_llm_failure_falls_back_to_headings(self, mock_llm):
         mock_llm.side_effect = RuntimeError("API error")
         parser = _make_parser()
         names = parser._identify_assays(SAMPLE_METHODS_TEXT)
-        assert names == []
+        # When the LLM fails, heading extraction provides a safety net.
+        # SAMPLE_METHODS_TEXT has headings like "Cell culture and library
+        # preparation", "Read alignment and peak calling", etc.
+        headings = _extract_heading_like_lines(SAMPLE_METHODS_TEXT)
+        if headings:
+            assert len(names) > 0, "Heading fallback should provide assay names"
+        else:
+            assert names == []
 
 
 # ---------------------------------------------------------------------------
@@ -818,8 +834,8 @@ class TestParse:
                 "Differential expression analysis",
             ])
         if output_schema is _AssayClassificationList:
-            # All three assays classified as computational so existing count
-            # assertions remain valid (no assays are filtered out).
+            # LLM assays classified as computational; heading-extracted assays
+            # classified as experimental so they get filtered by computational_only.
             return _AssayClassificationList(assays=[
                 _AssayCategoryItem(
                     name="eCLIP library preparation",
@@ -832,6 +848,14 @@ class TestParse:
                 _AssayCategoryItem(
                     name="Differential expression analysis",
                     method_category="computational",
+                ),
+                _AssayCategoryItem(
+                    name="Cell culture and library preparation",
+                    method_category="experimental",
+                ),
+                _AssayCategoryItem(
+                    name="RNA-seq library preparation",
+                    method_category="experimental",
                 ),
             ])
         if output_schema is _AssayMeta:
@@ -930,12 +954,19 @@ class TestParse:
         assert stub.description == "Could not be parsed."
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
-    def test_clean_parse_has_no_warnings(self, mock_llm):
-        """When parsing succeeds cleanly, parse_warnings is empty."""
+    def test_clean_parse_has_no_critical_warnings(self, mock_llm):
+        """When parsing succeeds cleanly, no stub or error warnings are present.
+
+        Informational warnings about filtered-out experimental assays are
+        expected when heading-derived names are merged into the assay list
+        and then classified as non-computational.
+        """
         mock_llm.side_effect = lambda prompt, output_schema, **kw: self._mock_llm(prompt, output_schema)
         parser = _make_parser()
         method = parser.parse(SAMPLE_PAPER)
-        assert method.parse_warnings == []
+        # Informational filtering warnings are acceptable.
+        critical = [w for w in method.parse_warnings if not w.startswith("assay_filtered_non_computational")]
+        assert critical == [], f"Unexpected critical warnings: {critical}"
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_assay_stub_recorded_in_parse_warnings(self, mock_llm):
@@ -1333,7 +1364,7 @@ class TestParse:
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_computational_only_filters_experimental_assays(self, mock_llm):
-        """With computational_only=True (default), only computational assays are kept."""
+        """With computational_only=True (default), only computational/mixed assays are kept."""
         def side_effect(prompt, output_schema, **kw):
             if output_schema is _AssayList:
                 return _AssayList(assay_names=[
@@ -1346,6 +1377,11 @@ class TestParse:
                     _AssayCategoryItem(name="eCLIP library preparation", method_category="experimental"),
                     _AssayCategoryItem(name="Read alignment", method_category="computational"),
                     _AssayCategoryItem(name="DESeq2 differential expression", method_category="computational"),
+                    # Heading-derived names also classified.
+                    _AssayCategoryItem(name="Cell culture and library preparation", method_category="experimental"),
+                    _AssayCategoryItem(name="RNA-seq library preparation", method_category="experimental"),
+                    _AssayCategoryItem(name="Read alignment and peak calling", method_category="computational"),
+                    _AssayCategoryItem(name="Differential expression analysis", method_category="computational"),
                 ])
             return self._mock_llm(prompt, output_schema)
 
@@ -1354,9 +1390,9 @@ class TestParse:
         method = parser.parse(SAMPLE_PAPER, computational_only=True)
         names = [a.name for a in method.assays]
         assert "eCLIP library preparation" not in names
+        assert "Cell culture and library preparation" not in names
         assert "Read alignment" in names
         assert "DESeq2 differential expression" in names
-        assert len(method.assays) == 2
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_computational_only_false_keeps_all_assays(self, mock_llm):
@@ -1379,11 +1415,20 @@ class TestParse:
         mock_llm.side_effect = side_effect
         parser = _make_parser()
         method = parser.parse(SAMPLE_PAPER, computational_only=False)
-        assert len(method.assays) == 3
+        # LLM returns 3 + heading-derived names merged in.
+        names = [a.name for a in method.assays]
+        assert "eCLIP library preparation" in names
+        assert "Read alignment" in names
+        assert "DESeq2 differential expression" in names
+        assert len(method.assays) >= 3
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
-    def test_mixed_assay_is_filtered_when_computational_only(self, mock_llm):
-        """Assays classified as 'mixed' are excluded when computational_only=True."""
+    def test_mixed_assay_is_kept_when_computational_only(self, mock_llm):
+        """Assays classified as 'mixed' are NOW included when computational_only=True.
+
+        Mixed assays have computational components that should be parsed.
+        Only purely 'experimental' assays are filtered out.
+        """
         def side_effect(prompt, output_schema, **kw):
             if output_schema is _AssayList:
                 return _AssayList(assay_names=["eCLIP-seq library prep and processing"])
@@ -1399,7 +1444,8 @@ class TestParse:
         mock_llm.side_effect = side_effect
         parser = _make_parser()
         method = parser.parse(SAMPLE_PAPER, computational_only=True)
-        assert len(method.assays) == 0
+        names = [a.name for a in method.assays]
+        assert "eCLIP-seq library prep and processing" in names
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_filtered_experimental_assay_recorded_in_parse_warnings(self, mock_llm):
@@ -1453,8 +1499,13 @@ class TestParse:
         mock_llm.side_effect = side_effect
         parser = _make_parser()
         method = parser.parse(SAMPLE_PAPER, computational_only=True)
-        # All 3 assays should be kept (default → computational, passes filter)
-        assert len(method.assays) == 3
+        # LLM-identified assays should be kept (default → computational, passes filter).
+        # Heading-derived names also default to computational and are included.
+        names = [a.name for a in method.assays]
+        assert "eCLIP library preparation" in names
+        assert "Read alignment and peak calling" in names
+        assert "Differential expression analysis" in names
+        assert len(method.assays) >= 3
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_pmid_27018577_does_not_force_hardcoded_assay_titles(self, mock_llm):
@@ -1469,11 +1520,14 @@ class TestParse:
         )
         method = parser.parse(paper, computational_only=False)
         names = [a.name for a in method.assays]
-        assert names == [
+        # LLM-identified assays must appear first, in order.
+        assert names[:3] == [
             "eCLIP library preparation",
             "Read alignment and peak calling",
             "Differential expression analysis",
         ]
+        # Additional heading-derived names may follow but must not replace
+        # LLM names or change their ordering.
 
 
 # ---------------------------------------------------------------------------
@@ -1533,3 +1587,297 @@ class TestAssayGraphHelpers:
         graph = self._make_graph()
         method = Method(paper_doi="10.0000/test", assay_graph=graph)
         assert len(method.assays) == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests for heading-aware assay identification helpers
+# ---------------------------------------------------------------------------
+
+# A realistic long methods section with assays spread across >10 000 chars.
+LONG_METHODS_TEXT = """\
+Methods
+
+Lentiviral production
+
+Lenti-X 293T cells were cultured in DMEM with 10% FBS and passaged at 90% confluency.
+Lentiviral particles were produced by co-transfection of the transfer plasmid with
+psPAX2 and pMD2.G packaging plasmids using Lipofectamine 3000 according to the
+manufacturer's protocol.  Supernatant was collected 48 hours post-transfection and
+concentrated using Lenti-X Concentrator. Viral titer was determined by serial dilution.
+
+Fibroblast cell culture and transduction
+
+Primary fibroblasts were cultured in TFM on uncoated plastic six-well plates.
+Cells were maintained at 37 degrees C with 5% CO2 in a humidified incubator.
+Fibroblasts were passaged every 3-4 days using TrypLE Express. All cell lines
+were mycoplasma-free.  Transduction was performed at MOI 10 with polybrene 8 ug/ml.
+
+Fibroblast transdifferentiation
+
+Transdifferentiation plates were prepared by coating with poly-D-lysine and poly-L-ornithine.
+Fibroblasts were seeded at 50,000 cells per well and induced with doxycycline (2 ug/ml).
+Medium was changed every other day for 21 days to obtain mature transdifferentiated neurons.
+Neuronal identity was confirmed by MAP2 and NeuN immunostaining. Electrophysiological activity
+was validated by whole-cell patch clamp recordings demonstrating action potential firing.
+
+iPSC reprogramming and cell culture
+
+Primary fibroblasts were reprogrammed using the CytoTune iPS 2.0 Sendai Kit.
+Colonies were picked manually after 3-4 weeks and expanded on Matrigel-coated plates
+in mTeSR Plus medium. iPSC identity was confirmed by immunostaining for OCT4, SOX2,
+and NANOG, and by karyotype analysis. Cells were maintained in feeder-free conditions.
+
+Bisulfite sequencing
+
+Genomic DNA was extracted using the DNeasy Blood & Tissue Kit. Bisulfite conversion
+was performed with the EZ DNA Methylation-Gold Kit. Libraries were prepared using the
+TruSeq DNA Methylation Kit and sequenced on the Illumina NovaSeq 6000 (2x150 bp).
+Methylation analysis was performed using Bismark with alignment to the hg38 genome.
+Differentially methylated regions were identified using methylKit with a q-value < 0.01.
+
+MEA
+
+Mature neurons were seeded onto MEA plates. Recordings were taken using the Maestro
+Classic MEA system with Axion Integrated Studio (v.2.1.5). Spontaneous and evoked
+activity was analyzed. Bicuculline (50 uM) was used to stimulate network activity.
+Spike detection and burst analysis were performed using the AxIS Navigator software.
+
+Immunofluorescence
+
+Cells were fixed with 4% PFA, permeabilized with 0.1% Triton X-100, and stained
+with primary antibodies overnight at 4 degrees C. Images were acquired on a Zeiss
+LSM 880 confocal microscope. Quantification of nuclear/cytoplasmic ratios was
+performed in ImageJ using automated thresholding and ROI analysis.
+
+Brain tissue immunohistochemistry
+
+Formalin-fixed paraffin-embedded samples were deparaffinized and rehydrated.
+Antigen retrieval was performed in citrate buffer at 95 degrees C for 20 minutes.
+Sections were blocked and incubated with primary antibodies overnight.
+Detection was performed using secondary antibodies conjugated to Alexa Fluor 488.
+
+RNA-seq
+
+Total RNA was extracted using TRIzol. Libraries were prepared using the TruSeq
+Stranded mRNA kit. Sequencing was performed on the NovaSeq 6000 (2x150 bp).
+Reads were aligned to hg38 using STAR v2.7.10a with default parameters.
+Gene counts were generated with featureCounts. Differential expression analysis
+was performed using DESeq2 with FDR < 0.05 and |log2FC| > 1.
+
+Proteomics
+
+Cell pellets were lysed in 8M urea buffer. Proteins were digested with trypsin
+after reduction and alkylation. Peptides were analyzed by LC-MS/MS on a timsTOF
+Pro 2. Raw files were processed using DIA-NN v1.8.1 with a UniProt reference
+database. Protein-level quantification used MaxLFQ normalization.
+
+eCLIP
+
+At least 1 million cells were UV crosslinked at 400 mJ/cm2. Immunoprecipitation
+was performed with validated antibodies on Dynabeads. Libraries were prepared
+following the standard eCLIP protocol and sequenced on the HiSeq 4000.
+Reads were processed with the eCLIP pipeline: adapter trimming with Cutadapt,
+alignment with STAR, duplicate removal, and peak calling with CLIPper.
+
+AP-MS
+
+Cell pellets were lysed in IP buffer with protease inhibitors.
+Immunoprecipitation was performed with anti-FLAG antibody on Protein G beads.
+Eluted proteins were digested and analyzed by LC-MS/MS. Data were processed
+with MaxQuant for protein identification and quantification.
+
+Tandem ubiquitin binding entities (TUBE) pulldown MS
+
+TUBE magnetic beads were used to enrich ubiquitylated proteins from cell lysates.
+Enriched proteins were eluted, digested with trypsin, and analyzed by LC-MS/MS.
+Data were searched against UniProt using MaxQuant with FDR < 0.01.
+
+Ribo-seq
+
+Cells were treated with cycloheximide to arrest translation. Lysates were digested
+with RNase I. Ribosome-protected fragments were isolated by sucrose gradient.
+Libraries were prepared and sequenced. Reads were aligned using STAR after
+adapter trimming. Translation efficiency was calculated as Ribo-seq / RNA-seq RPKM.
+
+Statistics and reproducibility
+
+No statistical method was used to predetermine sample sizes.
+"""
+
+
+class TestCompressMethodsForIdentification:
+    """Tests for _compress_methods_for_identification."""
+
+    def test_short_text_returned_unchanged(self):
+        short = "RNA-seq\nReads were aligned using STAR."
+        assert _compress_methods_for_identification(short, char_budget=6000) == short
+
+    def test_long_text_preserves_all_headings(self):
+        compressed = _compress_methods_for_identification(LONG_METHODS_TEXT, char_budget=6000)
+        for assay in [
+            "Bisulfite sequencing", "MEA", "Immunofluorescence",
+            "Brain tissue immunohistochemistry", "RNA-seq", "Proteomics",
+            "eCLIP", "AP-MS", "Ribo-seq",
+        ]:
+            assert assay.lower() in compressed.lower(), (
+                f"Compressed summary missing '{assay}'"
+            )
+
+    def test_compressed_within_budget(self):
+        compressed = _compress_methods_for_identification(LONG_METHODS_TEXT, char_budget=3000)
+        assert len(compressed) <= 3000
+
+    def test_compressed_retains_opening_sentences(self):
+        compressed = _compress_methods_for_identification(LONG_METHODS_TEXT, char_budget=6000)
+        # Should retain enough context to see computational tools.
+        assert "star" in compressed.lower() or "deseq2" in compressed.lower()
+
+    def test_headings_only_fallback_at_tight_budget(self):
+        compressed = _compress_methods_for_identification(LONG_METHODS_TEXT, char_budget=2500)
+        compressed_lower = compressed.lower()
+        # With a tight budget, key assays should still be present via headings.
+        assert "rna-seq" in compressed_lower
+        assert "proteomics" in compressed_lower
+        assert "eclip" in compressed_lower
+        assert len(compressed) <= 2500
+
+
+class TestMergeHeadingAndLlmAssays:
+    """Tests for _merge_heading_and_llm_assays."""
+
+    def test_empty_headings_returns_llm_only(self):
+        result = _merge_heading_and_llm_assays([], ["RNA-seq", "eCLIP"])
+        assert result == ["RNA-seq", "eCLIP"]
+
+    def test_empty_llm_returns_headings_only(self):
+        result = _merge_heading_and_llm_assays(["RNA-seq", "eCLIP"], [])
+        assert result == ["RNA-seq", "eCLIP"]
+
+    def test_merges_missing_headings(self):
+        # LLM only found first 2, headings found all 4.
+        headings = ["Lentiviral production", "RNA-seq", "Proteomics", "eCLIP"]
+        llm = ["Lentiviral production", "RNA-seq"]
+        result = _merge_heading_and_llm_assays(headings, llm)
+        result_lower = {n.lower() for n in result}
+        assert "proteomics" in result_lower
+        assert "eclip" in result_lower
+
+    def test_no_duplicates_via_substring_match(self):
+        headings = ["RNA-seq"]
+        llm = ["RNA-seq library preparation and analysis"]
+        result = _merge_heading_and_llm_assays(headings, llm)
+        # Should not duplicate RNA-seq since it's a substring of the LLM name.
+        assert len(result) == 1
+
+    def test_llm_order_preserved(self):
+        headings = ["eCLIP", "RNA-seq"]
+        llm = ["RNA-seq", "eCLIP", "Proteomics"]
+        result = _merge_heading_and_llm_assays(headings, llm)
+        assert result[:3] == ["RNA-seq", "eCLIP", "Proteomics"]
+
+
+class TestFirstNSentences:
+    """Tests for _first_n_sentences."""
+
+    def test_extracts_first_sentence(self):
+        text = "Reads were aligned using STAR. Duplicates were removed. Peaks were called."
+        result = _first_n_sentences(text, n=1, max_chars=300)
+        assert result == "Reads were aligned using STAR."
+
+    def test_extracts_two_sentences(self):
+        text = "Reads were aligned using STAR. Duplicates were removed. Peaks were called."
+        result = _first_n_sentences(text, n=2, max_chars=300)
+        assert "Reads were aligned" in result
+        assert "Duplicates were removed." in result
+
+    def test_respects_max_chars(self):
+        text = "A" * 500 + "."
+        result = _first_n_sentences(text, n=2, max_chars=100)
+        assert len(result) <= 100
+
+
+class TestComputationalOnlyIncludesMixed:
+    """Verify that computational_only=True now retains 'mixed' assays."""
+
+    @patch("researcher_ai.parsers.methods_parser._extract_structured_data")
+    def test_mixed_assays_kept_when_computational_only(self, mock_llm):
+        """Mixed assays must NOT be filtered out by computational_only."""
+        # Set up mock LLM responses.
+        mock_llm.side_effect = _mock_llm_for_mixed_test
+
+        parser = MethodsParser.__new__(MethodsParser)
+        parser.llm_model = "test-model"
+        parser.cache = None
+        parser.protocol_rag = MagicMock()
+        parser.protocol_rag.search.return_value = []
+
+        paper = Paper(
+            title="Test",
+            doi="10.0000/test",
+            source=PaperSource.DOI,
+            source_path="10.0000/test",
+            sections=[Section(title="Methods", text=LONG_METHODS_TEXT)],
+        )
+
+        method = parser.parse(paper, computational_only=True)
+
+        assay_names_lower = {a.name.lower() for a in method.assays}
+
+        # These mixed assays must be present.
+        for expected in ["rna-seq", "proteomics", "eclip"]:
+            assert expected in assay_names_lower, (
+                f"Mixed assay '{expected}' was incorrectly filtered out"
+            )
+
+        # Purely experimental assays must be filtered.
+        filtered_msgs = [w for w in method.parse_warnings if "assay_filtered_non_computational" in w]
+        filtered_names = {w.split("'")[1].lower() for w in filtered_msgs if "'" in w}
+        for exp_only in ["lentiviral production"]:
+            assert exp_only in filtered_names, (
+                f"Purely experimental '{exp_only}' should have been filtered"
+            )
+
+
+def _mock_llm_for_mixed_test(prompt, output_schema, **kwargs):
+    """Mock LLM that returns realistic responses for the mixed-assay test."""
+    if output_schema is _AssayList:
+        return _AssayList(assay_names=[
+            "Lentiviral production",
+            "Fibroblast cell culture and transduction",
+            "RNA-seq",
+            "Proteomics",
+            "eCLIP",
+        ])
+
+    if output_schema is _AssayClassificationList:
+        return _AssayClassificationList(assays=[
+            _AssayCategoryItem(name="Lentiviral production", method_category="experimental"),
+            _AssayCategoryItem(name="Fibroblast cell culture and transduction", method_category="experimental"),
+            _AssayCategoryItem(name="RNA-seq", method_category="mixed"),
+            _AssayCategoryItem(name="Proteomics", method_category="mixed"),
+            _AssayCategoryItem(name="eCLIP", method_category="mixed"),
+        ])
+
+    if output_schema is _AvailabilityStatement:
+        return _AvailabilityStatement(data_statement="", code_statement="")
+
+    # Default: return an AssayMeta for per-assay parsing.
+    name = "unknown"
+    if "RNA-seq" in prompt:
+        name = "RNA-seq"
+    elif "Proteomics" in prompt:
+        name = "Proteomics"
+    elif "eCLIP" in prompt:
+        name = "eCLIP"
+
+    return _AssayMeta(
+        name=name,
+        description=f"Parsed {name}",
+        data_type="sequencing",
+        steps=[_StepMeta(
+            step_number=1,
+            description=f"Process {name} data",
+            input_data="raw data",
+            output_data="processed results",
+        )],
+    )

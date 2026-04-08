@@ -745,7 +745,7 @@ class TestSnapshotMultiAssayPipeline:
 
 @pytest.mark.live
 class TestLiveIntegrationECLIP:
-    """Live end-to-end test for PMID 26971820 (eCLIP, Van Nostrand 2016).
+    """Live end-to-end test for PMID 27018577 (eCLIP, Van Nostrand 2016).
 
     Requires: ANTHROPIC_API_KEY, network access.
     Run with: pytest --run-live tests/test_integration.py::TestLiveIntegrationECLIP -v
@@ -757,7 +757,7 @@ class TestLiveIntegrationECLIP:
     - Standard CLIP-seq pipeline → Snakemake rules generatable
     """
 
-    PMID = "26971820"
+    PMID = "27018577"
     EXPECTED_DOI = "10.1038/nmeth.3810"
     EXPECTED_ACCESSION = "GSE77695"
 
@@ -1092,9 +1092,13 @@ class TestSnapshotPipelineFromRealFixture:
         assert "rule all:" in self.pipeline.snakefile_content
 
     def test_pipeline_step_count_matches_assays(self):
-        """Pipeline steps must be ≥ total method steps (one PipelineStep per AnalysisStep)."""
-        total_method_steps = sum(len(a.steps) for a in self.method.assays)
-        assert len(self.pipeline.config.steps) >= total_method_steps
+        """Pipeline steps must cover all computational method steps."""
+        total_comp_steps = sum(
+            len(a.steps)
+            for a in self.method.assays
+            if a.method_category == MethodCategory.computational
+        )
+        assert len(self.pipeline.config.steps) >= total_comp_steps
 
     def test_pipeline_conda_has_star(self):
         assert "star" in self.pipeline.conda_env_yaml

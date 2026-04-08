@@ -197,8 +197,14 @@ class TestMethodsParserSnapshoteCLIP:
     def test_parse_warnings_empty(self):
         method = self._parse()
         if self.anchors["parse_warnings_empty"]:
-            assert method.parse_warnings == [], (
-                f"Expected no parse warnings; got: {method.parse_warnings}"
+            # Live/provider-dependent RAG enrichment may emit informative
+            # inferred-parameter warnings even when no parse degradation occurs.
+            non_informational = [
+                w for w in method.parse_warnings
+                if not str(w).startswith("inferred_parameters:")
+            ]
+            assert non_informational == [], (
+                f"Expected no non-informational parse warnings; got: {method.parse_warnings}"
             )
 
     def test_computational_assay_step_count(self):

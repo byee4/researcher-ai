@@ -1,3 +1,10 @@
+> [!WARNING]
+> **Deprecated Architecture Plan**
+>
+> This document is deprecated as a planning authority.
+> Use `docs/WORKFLOW_GRAPH_IR_PLAN.md` for the canonical roadmap and IR-first implementation plan.
+> `docs/ARCHITECTURE.md` remains the source of truth for current implemented architecture.
+
 # Agentic Refactor Plan: `researcher_ai` Architecture
 
 This document serves as an architectural blueprint for transitioning the `researcher_ai` codebase from a linear ETL pipeline to a state-graph agentic workflow. It is written with system prompts and directives designed to be ingested by an AI coding assistant or autonomous engineering agent.

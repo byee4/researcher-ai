@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import researcher_ai.pipeline.orchestrator as orch_mod
+from researcher_ai.models.method import Method
 from researcher_ai.models.paper import PaperSource
 from researcher_ai.models.pipeline import Pipeline, PipelineBackend, PipelineConfig
 from researcher_ai.pipeline.orchestrator import WorkflowOrchestrator
@@ -25,7 +26,7 @@ def test_orchestrator_retries_builder_after_failed_validation(monkeypatch):
 
     monkeypatch.setattr(orchestrator, "_node_parse_paper", lambda state: {"paper": object()})
     monkeypatch.setattr(orchestrator, "_node_parse_figures", lambda state: {"figures": []})
-    monkeypatch.setattr(orchestrator, "_node_parse_methods", lambda state: {"method": object()})
+    monkeypatch.setattr(orchestrator, "_node_parse_methods", lambda state: {"method": Method()})
     monkeypatch.setattr(orchestrator, "_node_parse_datasets", lambda state: {"datasets": [], "dataset_parse_errors": []})
     monkeypatch.setattr(orchestrator, "_node_parse_software", lambda state: {"software": []})
 
@@ -50,7 +51,7 @@ def test_orchestrator_stops_after_max_builder_attempts(monkeypatch):
 
     monkeypatch.setattr(orchestrator, "_node_parse_paper", lambda state: {"paper": object()})
     monkeypatch.setattr(orchestrator, "_node_parse_figures", lambda state: {"figures": []})
-    monkeypatch.setattr(orchestrator, "_node_parse_methods", lambda state: {"method": object()})
+    monkeypatch.setattr(orchestrator, "_node_parse_methods", lambda state: {"method": Method()})
     monkeypatch.setattr(orchestrator, "_node_parse_datasets", lambda state: {"datasets": [], "dataset_parse_errors": []})
     monkeypatch.setattr(orchestrator, "_node_parse_software", lambda state: {"software": []})
     monkeypatch.setattr(orchestrator.pipeline_builder, "build", lambda *args, **kwargs: _fake_pipeline(passed=False))

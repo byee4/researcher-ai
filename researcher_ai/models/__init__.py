@@ -64,6 +64,20 @@ from researcher_ai.models.confidence import (
     AssayConfidence,
     PipelineConfidence,
 )
+from researcher_ai.models.workflow_graph import (
+    ExecutionBackend,
+    GraphEdge,
+    GraphNode,
+    GraphPort,
+    GraphValidationIssue,
+    NodeKind,
+    NodeResources,
+    PortDirection,
+    PortMultiplicity,
+    PortType,
+    ValidationSeverity,
+    WorkflowGraph,
+)
 
 __all__ = [
     # paper
@@ -84,4 +98,17 @@ __all__ = [
     "Pipeline", "PipelineBackend", "PipelineConfig", "PipelineStep",
     # confidence
     "StepConfidence", "AssayConfidence", "PipelineConfidence",
+    # workflow graph
+    "ExecutionBackend",
+    "GraphEdge",
+    "GraphNode",
+    "GraphPort",
+    "GraphValidationIssue",
+    "NodeKind",
+    "NodeResources",
+    "PortDirection",
+    "PortMultiplicity",
+    "PortType",
+    "ValidationSeverity",
+    "WorkflowGraph",
 ]
