@@ -28,6 +28,11 @@ Use this file to:
 - `RESEARCHER_AI_MODEL`: default model router (default `gpt-5.4`)
 - `RESEARCHER_AI_LLM_TIMEOUT_SECONDS`: LLM timeout override
 - `RESEARCHER_AI_MAX_IMAGE_BYTES`: image-size cap for multimodal calls
+- `RESEARCHER_AI_BIOWORKFLOW_MODE`: BioWorkflow rollout mode (`off`, `warn`, `on`)
+  - `off`: skip validation stage in orchestrator
+  - `warn` (default): run validation and continue with warnings
+  - `on`: strict; if ungrounded fields remain, return `needs_human_review`
+- `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS`: hard cap for iterative retrieval rounds per stage
 
 ## BioC / PubMed
 
@@ -52,6 +57,8 @@ Use this file to:
 ```bash
 export OPENAI_API_KEY="..."
 export RESEARCHER_AI_MODEL="gpt-5.4"
+export RESEARCHER_AI_BIOWORKFLOW_MODE="warn"
+export RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS="2"
 export NCBI_API_KEY="..."
 export RESEARCHER_AI_BIOC_ENABLED="1"
 export RESEARCHER_AI_FIGURE_CALIBRATION="on"

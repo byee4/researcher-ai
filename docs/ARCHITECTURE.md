@@ -83,6 +83,19 @@ Errors are captured in `dataset_parse_errors` instead of hard-failing the run.
 
 State keys include parsed artifacts plus `progress`, `stage`, and build retry counters.
 
+BioWorkflow rollout control is managed by `RESEARCHER_AI_BIOWORKFLOW_MODE`:
+- `off`: skips method-validation stage.
+- `warn` (default): validates and continues with warnings.
+- `on`: strict mode; ungrounded validation findings block pipeline build and
+  return terminal `stage="needs_human_review"` with `human_review_summary`.
+
+To prevent iterative-query runaway, methods parsing also enforces a hard
+retrieval refinement cap via `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS`.
+
+Per-paper table vision fallback is tracked for benchmark observability as:
+- `vision_fallback_count`
+- `vision_fallback_latency_seconds`
+
 ## Pipeline generation
 
 `PipelineBuilder`:

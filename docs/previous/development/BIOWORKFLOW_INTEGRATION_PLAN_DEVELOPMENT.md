@@ -1,3 +1,48 @@
+# Bioworkflow Integration Plan
+## Original prompt: 
+
+I want to improve my software by integrating principles and paradigms outlined in https://pmc.ncbi.nlm.nih.gov/articles/PMC12596265/. Develop a concrete plan to improve my software. Ensure integration in phases and include real world tests.
+
+## Original plan:
+Based on your repository's structure and the current strategy in `methods_parser.py` (which extracts the methods section text via title matching and uses an LLM to identify distinct assays in a single pass), your software is vulnerable to missing workflow parameters scattered across tables, figures, or supplementary text. 
+
+The framework outlined in the paper *BioWorkflow* (PMC12596265) provides an excellent blueprint to solve these issues using a retrieval-augmented generation (RAG) approach. Below is a phased, concrete plan to refactor your software using its core paradigms.
+
+### Phase 1: Multimodal Indexing & Chunk-Level Summaries
+**The Principle:** Rather than just extracting the "Methods" text block, BioWorkflow tackles "multimodal dispersion" by parsing PDFs into synchronized text passages, table entries, and figure captions. 
+**The Implementation:**
+1. **Refactor `paper_parser.py`:** Update your parsing logic to systematically extract tables and figure captions alongside the prose. 
+2. **Chunking & Summarization:** Pass each extracted chunk (a paragraph, table, or caption) to an LLM to generate a concise summary that highlights specific toolkits, algorithms, or protocol steps.
+3. **Vector Database:** Embed both the original chunks and their LLM summaries into a vector space (e.g., using FAISS in your `rag.py` utility) to enable context-aware retrieval across all modalities.
+
+### Phase 2: Hierarchical Decomposition & Iterative Retrieval
+**The Principle:** Single-shot LLM prompts fail on complex literature. BioWorkflow automatically decomposes queries into a hierarchy of interdependent subquestions, each undergoing multi-round retrieval with dynamic reformulation.
+**The Implementation:**
+1. **Decomposer Agent:** In `methods_parser.py`, instead of asking the LLM to "Identify all distinct assays," first ask the LLM to outline the expected high-level stages of the workflow (e.g., 1. Library Prep, 2. Alignment, 3. Quantification).
+2. **Dynamic RAG Loop:** For each stage, dynamically formulate a sub-query against your vector index. If the initial retrieval finds the tool (e.g., "STAR") but misses the parameters, trigger a follow-up query specifically asking for "STAR mapping parameters" or "STAR index build settings". 
+3. **Workflow Assembly:** Map these sequentially retrieved components into your intermediate representation in `models/workflow_graph.py`.
+
+### Phase 3: Staged Assembly & Automated Validation
+**The Principle:** To suppress hallucinations, BioWorkflow uses stage-specific templates and an automated validation agent to cross-check every generated step against its source evidence.
+**The Implementation:**
+1. **Template-Driven Assembly:** Stitch the subquestion answers together using structured prompt templates tailored to the specific assay type (e.g., RNA-seq vs. variant calling).
+2. **Validation Agent:** Create a new verification layer in your parser pipeline. Before returning the final `Pipeline` or `Method` object, an independent LLM call must review every extracted software package, version, and parameter, cross-referencing them strictly against the retrieved textual evidence. Any unsupported parameter must be discarded or flagged.
+
+### Phase 4: Real-World Testing & Benchmarking
+To guarantee these integrations work, you need to extend your existing evaluation suite (e.g., `tests/test_methods_parser_eval.py` and your `scripts/run_workflow.py`). 
+
+**Test Case 1: The "Hidden Parameter" Test**
+* **Setup:** Use a PMC paper where the core software is named in the methods text, but the specific command-line arguments are hidden in a supplementary table or a figure caption.
+* **Assertion:** Verify that the multimodal vector index (Phase 1) successfully pairs the tool with its table-bound parameters. 
+
+**Test Case 2: The "Hallucination Suppression" Test**
+* **Setup:** Feed the parser a truncated paper that explicitly omits the version number of a popular tool (e.g., Seurat or DESeq2).
+* **Assertion:** Verify that the Automated Validation Agent (Phase 3) leaves the version field null or explicitly flags it as missing, rather than allowing the LLM to guess a default version.
+
+**Test Case 3: End-to-End Multimodal Execution**
+* **Setup:** Select 5-10 bioinformatics papers representing distinct workflows (scRNA-seq, ChIP-seq, WGS) from your `tests/snapshots/methods/` directory. 
+* **Assertion:** Compare the generated workflow graph structures against manually curated baselines, measuring extraction precision and multi-round retrieval efficiency.
+
 # BioWorkflow Integration Plan — Review & Improvements
 
 ## Executive Summary
@@ -348,7 +393,73 @@ This reordering front-loads value and risk-mitigation (validation catches halluc
 
 ---
 
-## Sources
+# Agent response:
 
-- [BioWorkflow: Retrieving comprehensive bioinformatics workflows from publications (PMC)](https://pmc.ncbi.nlm.nih.gov/articles/PMC12596265/)
-- [BioWorkflow — Briefings in Bioinformatics (Oxford Academic)](https://academic.oup.com/bib/article/26/6/bbaf571/8315884)
+This is an exceptionally well-architected and realistic revision. By anchoring the BioWorkflow concepts directly to the actual state of the `researcher-ai` codebase, this plan avoids redundant engineering and targets the exact bottlenecks causing parameter loss and hallucinations. 
+
+Your critique of the original abstraction is spot on—especially the realization that `marker-pdf` and `figure_parser.py` are already doing the heavy lifting for extraction, and the true missing link is preserving the *modality provenance* (prose vs. table vs. caption) in an ephemeral, searchable space.
+
+Here are a few technical thoughts on your revised plan and how to manage the execution:
+
+### Strategic Highlights of Your Revision
+* **The Ephemeral `PaperRAGStore`:** This is a brilliant abstraction. Treating the paper as its own transient vector space prevents cross-contamination between papers and keeps the persistent `ProtocolRAGStore` clean. Tagging chunks with `ChunkType` finally gives the LLM the structural context it needs to trust a table over a vague prose mention.
+* **Validation Before Iterative Retrieval:** Reordering Phase 3 (Validation) to happen before Phase 2 (Iterative Retrieval) is a masterstroke. By building `validation_agent.py` first, you establish a deterministic safety net. This will immediately quantify the hallucination rate of the *current* pipeline, giving you a stark baseline to measure against before introducing the complexity of the dynamic retrieval loop.
+* **Template-Driven Priors:** Using YAML templates for specific assays (like RNA-seq or ChIP-seq) to enforce required stages is a robust way to guide the LLM. If the pipeline knows an RNA-seq workflow fundamentally requires quantification, it won't passively accept an output that skips from alignment straight to differential expression.
+
+### Managing the Migration Risks
+You rightly identified the token budget and timeout risks. Multi-round retrieval combined with skeleton generation and evidence cross-checking will significantly increase the volume of LLM calls. 
+
+* **Handling Timeouts:** The default `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` of 90s will likely be breached during the end-to-end integration tests. When you get to Phase 4 (Benchmarking), running these heavier, multi-round benchmark scripts interactively on your Mac might bottleneck. It will probably be necessary to batch these evaluation runs on the TSCC, utilizing the cluster's compute to handle the concurrent local embedding generation and parallelized LiteLLM API calls for the 10 curated test papers.
+* **Feature Flagging:** Your proposal to gate this behind `RESEARCHER_AI_BIOWORKFLOW_MODE=on` is crucial. It protects the `test_methods_parser_snapshot.py` suite from failing immediately while you tune the prompt structures.
+
+### Next Steps
+Given your recommended implementation order, the most logical starting points are either setting up the data models for the ephemeral index or building the standalone validation logic. 
+
+# Re-prompt: 
+
+is this a bulletproof plan
+
+# Agent response:
+
+In software engineering—especially when dealing with non-deterministic Large Language Models and messy PDFs—no plan is entirely "bulletproof." 
+
+While this revised plan is exceptionally robust, pragmatic, and heavily grounded in your actual codebase, it still has a few critical vulnerabilities. If this plan is going to fail, it will likely be at one of these friction points.
+
+Here are the specific "chinks in the armor" of this plan, and how you can reinforce them:
+
+### 1. The Table Extraction Heuristic (Phase 1 Risk)
+**The Vulnerability:** The plan assumes you can cleanly separate tables from prose by detecting Markdown syntax (`|---|`) generated by `marker-pdf`. However, older PDFs or papers with highly complex, merged-cell supplementary tables often break Markdown converters. If `marker-pdf` spits out a corrupted text block instead of a clean Markdown table, your `PaperRAGStore` will tag it as `prose` (or mangle the summary), defeating the entire purpose of Phase 1.
+**The Armor:** Add a fallback or validation step in `paper_indexer.py`. If a table's structural integrity is poor, pass the raw bounding-box image of the table (since you already use a multimodal approach in `figure_parser.py`) directly to the LLM to extract the parameters, bypassing the Markdown conversion entirely.
+
+### 2. Validation Agent "False Positives" (Phase 3 Risk)
+**The Vulnerability:** The validation agent is designed to cross-check extracted parameters against the source text. But scientific literature is full of implicit knowledge. If an author writes, "reads were aligned using standard STAR parameters," the LLM building the pipeline might correctly infer the default parameters for that version, but the Validation Agent will flag them as `ungrounded` because the exact strings aren't in the text.
+**The Armor:** The `ValidationVerdict` model needs an additional state. Instead of just `keep`, `flag_ungrounded`, or `discard`, add `inferred_default`. The validation agent must be prompted to distinguish between "The LLM hallucinated a specific random parameter" and "The LLM correctly populated a required default parameter that the paper implied."
+
+### 3. The "Orphaned Caption" Problem (Phase 1 & 2 Risk)
+**The Vulnerability:** You plan to ingest figure captions as `figure_caption` chunks. The problem is that a single figure (e.g., Figure 1) often spans multiple assays (Panel A is scRNA-seq, Panel C is ChIP-seq). When the Iterative Retrieval Loop searches for ChIP-seq parameters, it might pull in the scRNA-seq parameters from Panel A because they are embedded in the same caption chunk.
+**The Armor:** Do not embed whole captions as single chunks. Leverage the existing logic in `figure_parser.py` (which already extracts panel metadata) to split captions into panel-specific chunks *before* embedding them. Tag them not just as `figure_caption`, but specifically as `Figure 1, Panel C`.
+
+### 4. Latency and Rate Limit Cascades (Phase 2 Risk)
+**The Vulnerability:** The multi-round iterative loop is a massive multiplier on API calls.
+* Baseline: 1 LLM call per assay.
+* New Plan: 1 call for Skeleton + (up to 3 RAG loops × 4 stages) = up to 13 calls per assay. 
+For a 5-assay paper, you are suddenly making 65 calls to your LLM provider in a matter of minutes. This will almost certainly trigger rate limits (429 Too Many Requests) or breach your 90-second timeout window.
+**The Armor:** * **Concurrency:** You must update `orchestrator.py` to execute assay parsing asynchronously using `asyncio.gather`. 
+* **Circuit Breakers:** Implement a strict circuit breaker in the `_iterative_retrieval_loop`. If round 1 yields a high-confidence match with all required parameters (based on the YAML template), *skip* rounds 2 and 3. Only loop if fields are explicitly missing.
+
+### The Verdict
+It is an **A+ plan**, but it requires defensive programming. 
+
+If you build Phase 3 (the Validation Agent) first, you will immediately see how often the LLM hallucinates versus how often it correctly infers defaults. That data will tell you exactly how tightly you need to tune the multi-round retrieval in Phase 2. 
+
+# Agent response
+
+These are sharp observations. Let me verify the specific code paths you're referencing before updating the plan.Good — I've confirmed all four vulnerabilities against the actual code. Now let me update the plan document with these fixes integrated.Now let me apply the four vulnerability fixes as a new section and update the affected phases:Now update the ValidationVerdict model to include the `inferred_default` action:Now update the Phase 3 tests to cover the `inferred_default` case:Now add the Phase 2 latency/rate-limit fixes:Now update the migration risks section to reflect the new mitigations:Finally, add the vulnerability summary as a dedicated section:All four vulnerabilities are now integrated into the plan with code-verified mitigations. Here's what changed:
+
+**Vulnerability 1 (corrupted tables):** Phase 1 now includes a structural integrity check on Markdown table chunks. When validation fails, it falls back to `extract_figure_panel_images_from_pdf` (already at `utils/pdf.py:191`) to crop the table image and send it directly to the vision LLM — the same multimodal path `figure_parser.py` already uses for panel images.
+
+**Vulnerability 2 (validation false positives):** The `ValidationVerdict` model now has a 4-tier `EvidenceCategory` enum: `stated_in_paper`, `inferred_default`, `inferred_from_protocol`, and `ungrounded`. The validation agent is prompted to distinguish "the LLM hallucinated a random value" from "the LLM correctly populated a well-known default that the paper implied." A dedicated test case covers the "standard STAR parameters" scenario.
+
+**Vulnerability 3 (orphaned captions):** Phase 1 now chunks captions at the panel level using the existing `SubFigure` decomposition (`figure_parser.py:886`), tagged as `figure_caption:Figure_1_Panel_C`. A new unit test verifies that querying for "ChIP-seq" only returns the Panel C chunk, not the whole figure caption.
+
+**Vulnerability 4 (rate-limit cascade):** Phase 2's iterative loop now has circuit breakers (skip refinement when template fields are already complete), reducing worst-case from ~13 calls/assay to ~5. The plan also adds async concurrency for `orchestrator.py` (confirmed: it's currently fully synchronous) and adaptive timeout scaling based on assay count.
