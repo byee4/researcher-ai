@@ -312,6 +312,16 @@ class MethodsParser:
         self.assay_parse_base_timeout_seconds = float(
             max(1.0, float(assay_parse_base_timeout_seconds))
         )
+        env_round_cap = os.environ.get("RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS")
+        if env_round_cap is not None and str(env_round_cap).strip():
+            try:
+                max_retrieval_refinement_rounds = int(env_round_cap)
+            except ValueError:
+                logger.warning(
+                    "Invalid RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS=%r, keeping %s",
+                    env_round_cap,
+                    max_retrieval_refinement_rounds,
+                )
         self.max_retrieval_refinement_rounds = max(0, int(max_retrieval_refinement_rounds))
         self.protocol_rag = protocol_rag or ProtocolRAGStore(
             docs_dir=rag_docs_dir,

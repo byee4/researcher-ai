@@ -171,6 +171,19 @@ def test_methods_parser_init_passes_rag_configuration(tmp_path):
     assert parser.protocol_rag.lexical_min_token_len == 2
 
 
+def test_methods_parser_init_respects_env_round_cap(monkeypatch, tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "star.md").write_text("STAR runThreadN", encoding="utf-8")
+    monkeypatch.setenv("RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS", "1")
+    parser = MethodsParser(
+        llm_model="test-model",
+        rag_docs_dir=str(docs_dir),
+        rag_persist_dir=str(tmp_path / "persist"),
+    )
+    assert parser.max_retrieval_refinement_rounds == 1
+
+
 def _make_step_meta(n: int = 1, **kwargs) -> _StepMeta:
     defaults = dict(
         step_number=n,

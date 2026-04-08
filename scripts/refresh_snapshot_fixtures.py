@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
-from researcher_ai.benchmarks.snapshot_refresh import (
-    build_snapshot_refresh_plan,
-    update_manifest_created_date,
-)
+# Ensure repository root is importable when invoked as `python scripts/...`
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from researcher_ai.benchmarks.snapshot_refresh import build_snapshot_refresh_plan, update_manifest_created_date
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,4 +37,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
