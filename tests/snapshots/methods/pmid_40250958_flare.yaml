@@ -1,0 +1,55 @@
+# Snapshot fixture: FLARE/SAILOR C-to-U editing paper (PMID 40250958)
+# Iterative improvement example — contributed via eval framework.
+#
+# This fixture demonstrates how to add a new paper with its expected
+# computational method paragraph to the eval suite.
+
+pmid: "40250958"
+
+expected_assays:
+  - "Data analysis"
+
+expected_computational:
+  - "Data analysis"
+
+# The computational method paragraph that the parser should capture,
+# including all numbered steps.
+expected_computational_paragraphs:
+  "Data analysis":
+    full_text: |
+      3.5. Data analysis
+      1. Download sequencing data (fastq.gz files) into a working directory.
+      2. Use alignment tools such as Spliced Transcripts Alignment to a Reference
+         (STAR) to align the sequencing reads to the reference genome (e.g.,
+         hg38/mm10). Align only single-end reads. If the sequencing data are
+         paired-end reads, use one read from each pair to avoid duplicated counts
+         of editing sites.
+      3. Generate configuration (.json) files for "workflow_sailor" according to
+         https://github.com/YeoLab/FLARE. Set "edit_type" as "ct". Input the .bam
+         files from the alignment steps. Use the same reference genome as the
+         alignment step in "reference_fasta". Run "workflow_sailor" snakemake
+         pipeline. This yields a directory of sailor output.
+      4. Generate configuration (.json) files for "workflow_FLARE" according to
+         https://github.com/YeoLab/FLARE. Input the files from sailor output
+         subfolder "8_bw_and_bam", where the ".bed", ".bw" and ".bam" files
+         contain the individual C-to-U edit sites. Set "edit_type" as "CT".
+      5. FLARE outputs ".tsv" files and ".bed" files with C-to-U edit cluster
+         information. The ".tsv" files include information of chromosome, start
+         coordinate, end coordinate, fraction of target bases edited, strand,
+         number of target bases, number of edited bases, number of edited reads
+         overlapping region, number of reads overlapping region, etc.
+      6. Perform downstream analysis as needed (Examples of motif analysis and
+         IGV visualization can be found in Fig. 3).
+    expected_keywords:
+      - "STAR"
+      - "workflow_sailor"
+      - "workflow_FLARE"
+      - "Snakemake"
+      - "hg38"
+      - "C-to-U"
+    expected_steps_min: 6
+    expected_software:
+      - "STAR"
+      - "Snakemake"
+    expected_code_references:
+      - "https://github.com/YeoLab/FLARE"

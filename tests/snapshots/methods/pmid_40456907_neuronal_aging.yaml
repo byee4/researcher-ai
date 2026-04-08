@@ -1,0 +1,94 @@
+# Snapshot fixture: Neuronal aging paper (PMID 40456907)
+# Rhine et al. 2025, Nature Neuroscience
+# DOI: 10.1038/s41593-025-01952-z
+#
+# This fixture captures a paper with a very long methods section (~43 000 chars)
+# where computational assays are spread throughout and only appear well past
+# the old 4 000-char truncation boundary.  It was added as a regression test
+# for the heading-aware _identify_assays rewrite.
+#
+# expected_assays: the assays that MUST be identified by the parser.
+# expected_computational: assays that must survive the computational_only filter
+#   (classified as 'computational' or 'mixed').
+# expected_experimental_only: assays that should be filtered OUT when
+#   computational_only=True.
+
+pmid: "40456907"
+doi: "10.1038/s41593-025-01952-z"
+title: "Neuronal aging causes mislocalization of splicing proteins and unchecked cellular stress"
+
+# All assays that must be identified from the methods section headings.
+expected_assays:
+  - "Bisulfite sequencing"
+  - "MEA"
+  - "Immunofluorescence"
+  - "Brain tissue immunohistochemistry"
+  - "RNA-seq"
+  - "Proteomics"
+  - "eCLIP"
+  - "AP-MS"
+  - "Tandem ubiquitin binding entities (TUBE) pulldown MS"
+  - "Ribo-seq"
+
+# Assays that have computational components and must be retained when
+# computational_only=True (classified as 'computational' or 'mixed').
+expected_computational:
+  - "Bisulfite sequencing"
+  - "MEA"
+  - "Immunofluorescence"
+  - "RNA-seq"
+  - "Proteomics"
+  - "eCLIP"
+  - "AP-MS"
+  - "Tandem ubiquitin binding entities (TUBE) pulldown MS"
+  - "Ribo-seq"
+
+# Assays that are purely experimental (no computational component).
+expected_experimental_only:
+  - "Lentiviral production"
+  - "Fibroblast cell culture and transduction"
+  - "Fibroblast transdifferentiation"
+  - "iPSC reprogramming and cell culture"
+  - "iPSC neuron differentiation"
+  - "Mouse models"
+  - "Human brain models"
+  - "Western blot"
+  - "Fluorescence in situ hybridization"
+
+# Grouping rules: assays that should be linked as dependencies.
+expected_groupings:
+  - parent: "Proteomics"
+    children:
+      - "Tandem ubiquitin binding entities (TUBE) pulldown MS"
+    relationship: "mass_spec_variant"
+
+# Computational method paragraphs: the text blocks the parser should extract
+# for each computational assay.  Used to verify _extract_assay_paragraph
+# returns relevant content.
+# Keywords that must appear in the extracted paragraph for each assay.
+# Note: _extract_assay_paragraph caps at 3000 chars, so keywords from
+# very long subsections may not be reachable. Use keywords from the
+# opening sentences/paragraphs.
+expected_method_keywords:
+  "Bisulfite sequencing":
+    - "genomic DNA"
+    - "DNeasy"
+  "MEA":
+    - "Maestro"
+    - "Axion"
+  "Immunofluorescence":
+    - "ImageJ"
+    - "nuclear fraction"
+  "RNA-seq":
+    - "STAR"
+    - "hg38"
+  "Proteomics":
+    - "urea"
+    - "trypsin"
+  "eCLIP":
+    - "immunoprecipitation"
+    - "Dynabeads"
+  "AP-MS":
+    - "IP lysis buffer"
+  "Ribo-seq":
+    - "RNase I"

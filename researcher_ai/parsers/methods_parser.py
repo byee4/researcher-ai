@@ -356,11 +356,12 @@ class MethodsParser:
 
         if computational_only:
             filtered_names: list[str] = []
+            _INCLUDE_CATS = {MethodCategory.computational, MethodCategory.mixed}
             for n in assay_names:
                 # Default to computational when classification is unavailable so
                 # that classification failures never silently discard assays.
                 cat = category_map.get(n, MethodCategory.computational)
-                if cat == MethodCategory.computational:
+                if cat in _INCLUDE_CATS:
                     filtered_names.append(n)
                 else:
                     msg = (
@@ -596,9 +597,20 @@ class MethodsParser:
 
         Returns a flat list of assay name strings, ordered roughly as they
         appear in the methods text.
+
+        For long methods sections (>4 000 chars), uses a compressed summary
+        that preserves all subsection headings plus opening sentences, so that
+        assays beyond the old 4 000-char cutoff are still visible to the LLM.
+        Heading-extracted names are merged in as a safety net so that clearly
+        labelled assays are never silently dropped.
         """
         if not methods_text.strip():
             return []
+
+        # Build a compressed view that fits within the LLM context budget
+        # while covering the full breadth of the methods section.
+        compressed = _compress_methods_for_identification(methods_text, char_budget=6000)
+
         try:
             result = _extract_structured_data(
                 prompt=(
@@ -607,17 +619,21 @@ class MethodsParser:
                     "'RNA-seq library preparation' and 'RNA-seq read alignment' as separate "
                     "entries, but do not split a single method into sub-sentences. "
                     "Include both wet-lab protocols and computational steps.\n\n"
-                    f"METHODS TEXT:\n{methods_text[:4000]}"
+                    f"METHODS TEXT:\n{compressed}"
                 ),
                 output_schema=_AssayList,
                 system=SYSTEM_METHODS_PARSER,
                 model=self.llm_model,
                 cache=self.cache,
             )
-            return result.assay_names
+            llm_names = result.assay_names
         except Exception as exc:
             logger.warning("Assay identification failed: %s", exc)
-            return []
+            llm_names = []
+
+        # Merge heading-extracted assay names that the LLM may have missed.
+        heading_names = _extract_heading_like_lines(methods_text)
+        return _merge_heading_and_llm_assays(heading_names, llm_names)
 
     def _canonicalize_assay_names(
         self,
@@ -652,22 +668,40 @@ class MethodsParser:
             return {}
 
         assay_list = "\n".join(f"- {n}" for n in assay_names)
+
+        # Build per-assay context snippets so the LLM can see computational
+        # steps even when they appear late in a long methods section.
+        context_parts: list[str] = []
+        for name in assay_names:
+            block = _extract_assay_block_by_heading(methods_text, name, assay_names)
+            if block:
+                snippet = _first_n_sentences(block, n=3, max_chars=250)
+                context_parts.append(f"[{name}]: {snippet}")
+        assay_context = "\n".join(context_parts) if context_parts else methods_text[:3000]
+
         try:
             result = _extract_structured_data(
                 prompt=(
                     "For each assay in the list below, classify it as "
                     "'experimental', 'computational', or 'mixed'.\n\n"
-                    "- experimental: wet-lab protocol or instrument-based measurement "
+                    "- experimental: purely wet-lab protocol or instrument-based measurement "
+                    "with NO computational analysis component "
                     "(cell culture, library prep, immunoprecipitation, UV crosslinking, "
-                    "Western blot, FACS, microscopy, etc.).\n"
-                    "- computational: bioinformatics or statistical analysis on a computer "
-                    "(read alignment, peak calling, differential expression, clustering, "
-                    "normalization, variant calling, motif analysis, etc.).\n"
-                    "- mixed: the assay entry explicitly spans both wet-lab and computational "
-                    "steps.\n\n"
+                    "Western blot, FACS, etc.).\n"
+                    "- computational: primarily bioinformatics or statistical analysis on a "
+                    "computer (read alignment, peak calling, differential expression, "
+                    "clustering, normalization, variant calling, motif analysis, etc.).\n"
+                    "- mixed: the assay involves BOTH wet-lab/sample-preparation steps AND "
+                    "computational analysis (e.g., RNA-seq includes library prep + read "
+                    "alignment + differential expression; proteomics includes sample "
+                    "digestion + LC-MS/MS + database search; eCLIP includes "
+                    "immunoprecipitation + read processing + peak calling). Most "
+                    "high-throughput assays (sequencing, mass-spec, imaging with "
+                    "quantification) should be classified as 'mixed' because they "
+                    "inherently require computational processing of raw instrument data.\n\n"
                     "Use the EXACT assay names from the list.\n\n"
                     f"ASSAYS:\n{assay_list}\n\n"
-                    f"METHODS TEXT (for context):\n{methods_text[:2000]}"
+                    f"ASSAY CONTEXT (opening sentences of each section):\n{assay_context}"
                 ),
                 output_schema=_AssayClassificationList,
                 system=SYSTEM_METHODS_PARSER,
@@ -1260,11 +1294,29 @@ def _assay_from_meta(meta: _AssayMeta) -> Assay:
 
 
 def _extract_heading_like_lines(text: str) -> list[str]:
-    """Extract likely subsection headings from methods text."""
-    lines = [ln.strip() for ln in text.splitlines()]
+    """Extract likely subsection headings from methods text.
+
+    Headings are short lines (≤120 chars) that lack sentence-ending
+    punctuation, contain at least one alphabetic character, and are preceded
+    by a blank line (or appear at the start of the text).  Both multi-word
+    headings ("Bisulfite sequencing") and single-word headings
+    ("Proteomics", "eCLIP", "MEA", "RNA-seq") are accepted when they look
+    like standalone titles (≤40 chars, no lower-case-only common words).
+    """
+    raw_lines = text.splitlines()
     out: list[str] = []
     seen: set[str] = set()
-    for line in lines:
+
+    # Common English words that should NOT be treated as headings when alone.
+    _SINGLE_WORD_BLOCKLIST = {
+        "methods", "results", "discussion", "conclusions", "abstract",
+        "introduction", "references", "acknowledgements", "funding",
+        "the", "and", "for", "with", "from", "that", "this", "were",
+        "was", "are", "been", "also", "then", "next", "after", "before",
+    }
+
+    for idx, raw_line in enumerate(raw_lines):
+        line = raw_line.strip()
         if not line or len(line) > 120:
             continue
         if line.endswith("."):
@@ -1273,13 +1325,141 @@ def _extract_heading_like_lines(text: str) -> list[str]:
             continue
         if re.search(r"^(data|code)\s+availability$", line, re.IGNORECASE):
             continue
-        # Keep title-like lines with at least one alphabetic token.
-        if re.search(r"[A-Za-z]", line) and len(line.split()) >= 2:
+        if re.search(r"^(statistics|reporting|online\s+content)", line, re.IGNORECASE):
+            continue
+        if not re.search(r"[A-Za-z]", line):
+            continue
+
+        # Headings should be preceded by a blank line (or be at the start).
+        # This prevents wrapped sentence fragments from being treated as headings.
+        prev_blank = (idx == 0) or (raw_lines[idx - 1].strip() == "")
+        if not prev_blank:
+            continue
+
+        # Reject lines with sentence-internal periods (e.g., "performed at 400 mJ/cm2. Immunoprecipitation")
+        # but allow periods in section numbers (e.g., "3.5. Data analysis") and
+        # abbreviations (e.g., "v.2.1", "AP-MS").
+        # The pattern requires at least 3 chars before the ". X" to avoid
+        # matching section-number prefixes like "3.5. ".
+        if re.search(r"[a-z]{3,}\.\s+[A-Z]", line):
+            continue
+
+        words = line.split()
+        is_heading = False
+
+        if len(words) >= 2:
+            is_heading = True
+        elif len(words) == 1 and len(line) <= 40:
+            word_lower = line.lower()
+            if word_lower not in _SINGLE_WORD_BLOCKLIST:
+                is_heading = True
+
+        if is_heading:
             key = line.casefold()
             if key not in seen:
                 seen.add(key)
                 out.append(line)
+
     return out
+
+
+def _compress_methods_for_identification(methods_text: str, char_budget: int = 6000) -> str:
+    """Build a compressed summary of the methods section for assay identification.
+
+    For long methods sections (common in multi-omic papers), naive truncation
+    misses assays described beyond the cutoff.  This function extracts every
+    subsection heading together with the first 1–2 sentences of each subsection
+    so the LLM can see the *full breadth* of assays within the char budget.
+
+    Strategy:
+    1. Split text into heading + body blocks using ``_extract_heading_like_lines``
+       heuristics.
+    2. For each block, keep the heading and the opening sentence(s).
+    3. If the result still exceeds *char_budget*, trim body snippets
+       proportionally while always preserving all headings.
+
+    Falls back to the raw text (truncated) when no heading structure is detected.
+    """
+    if len(methods_text) <= char_budget:
+        return methods_text
+
+    lines = methods_text.splitlines()
+    headings = _extract_heading_like_lines(methods_text)
+
+    if not headings:
+        # No recognisable heading structure — fall back to truncation.
+        return methods_text[:char_budget]
+
+    heading_set = {h.casefold() for h in headings}
+
+    # Group lines into (heading, body_lines) blocks.
+    blocks: list[tuple[str, list[str]]] = []
+    current_heading = ""
+    current_body: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.casefold() in heading_set:
+            if current_heading or current_body:
+                blocks.append((current_heading, current_body))
+            current_heading = stripped
+            current_body = []
+        else:
+            if stripped:
+                current_body.append(stripped)
+    if current_heading or current_body:
+        blocks.append((current_heading, current_body))
+
+    # Build compressed version: heading + first 2 sentences of body.
+    compressed_parts: list[str] = []
+    for heading, body in blocks:
+        if heading:
+            compressed_parts.append(f"\n{heading}")
+        # Take opening sentences (up to ~300 chars) for context.
+        body_text = " ".join(body)
+        snippet = _first_n_sentences(body_text, n=2, max_chars=300)
+        if snippet:
+            compressed_parts.append(snippet)
+
+    result = "\n".join(compressed_parts).strip()
+
+    if len(result) <= char_budget:
+        return result
+
+    # Over budget — progressively trim body snippets.
+    for max_chars in (200, 120, 60, 0):
+        trimmed: list[str] = []
+        for heading, body in blocks:
+            if heading:
+                trimmed.append(f"\n{heading}")
+            if max_chars > 0:
+                body_text = " ".join(body)
+                snippet = _first_n_sentences(body_text, n=1, max_chars=max_chars)
+                if snippet:
+                    trimmed.append(snippet)
+        result = "\n".join(trimmed).strip()
+        if len(result) <= char_budget:
+            return result
+
+    # Last resort: headings only.
+    return "\n".join(headings)[:char_budget]
+
+
+def _first_n_sentences(text: str, n: int = 2, max_chars: int = 300) -> str:
+    """Extract the first *n* sentences from *text*, capped at *max_chars*."""
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return ""
+    parts: list[str] = []
+    remaining = cleaned
+    for _ in range(n):
+        m = re.search(r"(.+?[.!?])(?:\s|$)", remaining)
+        if not m:
+            break
+        parts.append(m.group(1).strip())
+        remaining = remaining[m.end():]
+    result = " ".join(parts) if parts else cleaned[:max_chars]
+    return result[:max_chars]
 
 
 def _first_sentence(text: str) -> str:
@@ -1374,6 +1554,39 @@ def _extract_github_urls(text: str) -> list[str]:
             seen.add(key)
             cleaned.append(url)
     return cleaned
+
+
+def _merge_heading_and_llm_assays(
+    heading_names: list[str],
+    llm_names: list[str],
+) -> list[str]:
+    """Merge heading-extracted assay names with LLM-identified assay names.
+
+    The LLM list is authoritative for ordering and naming, but headings act as
+    a safety net: any heading-derived name not already covered by the LLM list
+    (via case-insensitive substring matching) is appended at the end.
+
+    This ensures that assays with clear section headings in the methods text
+    are never silently dropped due to LLM context-window limitations.
+    """
+    if not heading_names:
+        return llm_names
+    if not llm_names:
+        return heading_names
+
+    llm_lower = {n.casefold() for n in llm_names}
+    merged = list(llm_names)
+    for heading in heading_names:
+        h_lower = heading.casefold()
+        # Check if any LLM name already covers this heading (substring match).
+        covered = any(
+            h_lower in ln or ln in h_lower
+            for ln in llm_lower
+        )
+        if not covered:
+            merged.append(heading)
+            llm_lower.add(h_lower)
+    return merged
 
 
 def _deduplicate_ordered_casefold(items: list[str]) -> list[str]:
