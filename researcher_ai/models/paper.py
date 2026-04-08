@@ -64,6 +64,28 @@ class Section(BaseModel):
     )
 
 
+class ChunkType(str, Enum):
+    """Modality-aware chunk classification for per-paper retrieval."""
+
+    PROSE = "prose"
+    TABLE = "table"
+    FIGURE_CAPTION = "figure_caption"
+    SUPPLEMENTARY = "supplementary"
+
+
+class AnnotatedChunk(BaseModel):
+    """Chunk with provenance metadata used by the PaperRAGStore."""
+
+    chunk_id: str
+    text: str
+    chunk_type: ChunkType
+    source_section: str = ""
+    summary: str = ""
+    page_number: Optional[int] = None
+    figure_id: Optional[str] = None
+    panel_id: Optional[str] = None
+
+
 class BioCPassageContext(BaseModel):
     """Normalized BioC passage payload used for parser enrichment."""
 

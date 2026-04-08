@@ -7,8 +7,10 @@ sub-module a model lives in:
 """
 
 from researcher_ai.models.paper import (
+    AnnotatedChunk,
     BioCContext,
     BioCPassageContext,
+    ChunkType,
     Paper,
     PaperSource,
     PaperType,
@@ -81,7 +83,7 @@ from researcher_ai.models.workflow_graph import (
 
 __all__ = [
     # paper
-    "BioCContext", "BioCPassageContext",
+    "AnnotatedChunk", "BioCContext", "BioCPassageContext", "ChunkType",
     "Paper", "PaperSource", "PaperType", "Reference", "Section", "SupplementaryItem",
     # figure
     "Axis", "AxisScale", "ColorMapping", "ColormapType", "ErrorBarType",
