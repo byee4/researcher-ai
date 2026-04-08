@@ -32,7 +32,8 @@ from researcher_ai.models.method import (
     MethodCategory,
 )
 from researcher_ai.models.paper import Paper
-from researcher_ai.utils.rag import ProtocolRAGStore, search_protocol_docs as rag_search_protocol_docs
+from researcher_ai.utils.paper_indexer import PaperRAGStore, merge_retrieval_results
+from researcher_ai.utils.rag import ProtocolRAGStore
 from researcher_ai.utils import llm as llm_utils
 from researcher_ai.utils.llm import (
     LLMCache,
@@ -275,12 +276,17 @@ class MethodsParser:
         llm_model: str = llm_utils.DEFAULT_MODEL,
         cache_dir: Optional[str] = None,
         protocol_rag: Optional[ProtocolRAGStore] = None,
+        paper_rag: Optional[PaperRAGStore] = None,
         rag_docs_dir: Optional[str] = None,
         rag_persist_dir: Optional[str] = None,
         rag_embedding_model: str = "all-MiniLM-L6-v2",
         rag_chunk_size: int = 900,
         rag_chunk_overlap: int = 120,
         rag_lexical_min_token_len: int = 2,
+        paper_rag_embedding_model: str = "all-MiniLM-L6-v2",
+        paper_rag_chunk_size: int = 900,
+        paper_rag_chunk_overlap: int = 120,
+        paper_rag_lexical_min_token_len: int = 2,
     ):
         """Initialize MethodsParser with optional on-disk LLM cache."""
         self.llm_model = llm_model
@@ -292,6 +298,14 @@ class MethodsParser:
             chunk_size=rag_chunk_size,
             chunk_overlap=rag_chunk_overlap,
             lexical_min_token_len=rag_lexical_min_token_len,
+        )
+        self.paper_rag = paper_rag or PaperRAGStore(
+            llm_model=llm_model,
+            cache=self.cache,
+            embedding_model=paper_rag_embedding_model,
+            chunk_size=paper_rag_chunk_size,
+            chunk_overlap=paper_rag_chunk_overlap,
+            lexical_min_token_len=paper_rag_lexical_min_token_len,
         )
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -353,6 +367,14 @@ class MethodsParser:
 
         assays: list[Assay] = []
         warnings: list[str] = list(code_ref_warnings)
+        try:
+            paper_store = getattr(self, "paper_rag", None)
+            if paper_store is not None:
+                paper_store.build_from(paper=paper, figures=figures or [])
+        except Exception as exc:
+            msg = f"paper_index_build_failed: {type(exc).__name__}: {exc}"
+            logger.warning(msg)
+            warnings.append(msg)
 
         if computational_only:
             filtered_names: list[str] = []
@@ -923,12 +945,37 @@ class MethodsParser:
     # ── Phase 3: RAG-style parameter inference ──────────────────────────────
 
     def search_protocol_docs(self, query: str, top_k: int = 3) -> str:
-        """Search local vector/lexical protocol index and return top chunks."""
+        """Search merged paper+protocol evidence with paper-first ranking."""
         store = getattr(self, "protocol_rag", None)
         if store is None:
             store = ProtocolRAGStore()
             self.protocol_rag = store
-        return rag_search_protocol_docs(query, top_k=top_k, store=store)
+        protocol_hits = store.query(query, top_k=max(top_k, 3))
+        paper_store = getattr(self, "paper_rag", None)
+        paper_hits = (
+            paper_store.query(query, top_k=max(top_k, 3))
+            if paper_store is not None
+            else []
+        )
+        merged = merge_retrieval_results(
+            paper_hits=paper_hits,
+            protocol_hits=protocol_hits,
+            top_k=top_k,
+            paper_bias=0.10,
+            protocol_bias=0.0,
+        )
+        if not merged:
+            return "No protocol documents matched the query."
+        lines: list[str] = []
+        for i, h in enumerate(merged, start=1):
+            source = str(h.get("source", "unknown"))
+            source_type = str(h.get("source_type", "protocol"))
+            chunk_type = h.get("chunk_type")
+            extra = f" chunk_type={chunk_type}" if chunk_type else ""
+            lines.append(
+                f"[{i}] source={source} source_type={source_type}{extra}\n{h.get('text', '')}"
+            )
+        return "\n\n".join(lines)
 
     def _infer_missing_computational_parameters(
         self,
