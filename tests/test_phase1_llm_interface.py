@@ -29,6 +29,7 @@ from researcher_ai.utils.llm import (
     extract_structured_data,
     generate_text,
     MODEL_ALIAS_MAP,
+    TokenLimitExceededError,
 )
 
 
@@ -350,6 +351,7 @@ def test_response_format_fallback_to_json_object(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
 
     out = extract_structured_data("gpt-5.4", "prompt", _Out)
     assert out.value == "fallback-ok"
@@ -462,9 +464,94 @@ def test_extract_structured_data_propagates_rate_limit_error(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
 
     with pytest.raises(RateLimitError, match="Rate limit"):
         extract_structured_data("gpt-5.4", "prompt", _Out)
+
+
+def test_generate_text_falls_back_on_rate_limit(monkeypatch):
+    """Rate-limited primary model should fall back to configured secondary."""
+    calls: list[str] = []
+
+    class RateLimitError(Exception):
+        pass
+
+    def _completion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "openai/gpt-5.4":
+            raise RateLimitError("429 too many requests")
+        return _DummyResponse("fallback-ok")
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._MODEL_CONFIG",
+        {"fallbacks": {"gpt-5.4": ["claude-4.6-opus"]}},
+    )
+
+    out = generate_text("gpt-5.4", "hello")
+    assert out == "fallback-ok"
+    assert calls[:2] == ["openai/gpt-5.4", "anthropic/claude-4.6-opus"]
+
+
+def test_extract_structured_data_falls_back_on_rate_limit(monkeypatch):
+    """Structured extraction should failover on primary 429 failures."""
+    calls: list[str] = []
+
+    class RateLimitError(Exception):
+        pass
+
+    def _completion(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "openai/gpt-5.4":
+            raise RateLimitError("rate limit exceeded")
+        return _DummyResponse(json.dumps({"value": "structured-fallback-ok"}))
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._MODEL_CONFIG",
+        {"fallbacks": {"gpt-5.4": ["claude-4.6-opus"]}},
+    )
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "structured-fallback-ok"
+    assert calls[:2] == ["openai/gpt-5.4", "anthropic/claude-4.6-opus"]
+
+
+def test_token_preflight_raises_before_api_call(monkeypatch):
+    """Configured context-window overrun should raise TokenLimitExceededError pre-dispatch."""
+    api_called: list[bool] = []
+
+    def _completion(**kwargs):
+        api_called.append(True)
+        return _DummyResponse(json.dumps({"value": "never"}))
+
+    def _token_counter(*, model, messages):  # noqa: ARG001
+        return 200
+
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        types.SimpleNamespace(completion=_completion, token_counter=_token_counter),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._PROVIDER_CONFIG",
+        {
+            "openai": {
+                "api_key_envs": ["OPENAI_API_KEY", "LLM_API_KEY"],
+                "max_context_tokens": 100,
+            }
+        },
+    )
+
+    with pytest.raises(TokenLimitExceededError, match="Token budget exceeded"):
+        extract_structured_data("gpt-5.4", "prompt", _Out, max_tokens=50)
+    assert not api_called, "Completion call should not execute after preflight failure"
 
 
 def test_generate_text_propagates_api_error(monkeypatch):

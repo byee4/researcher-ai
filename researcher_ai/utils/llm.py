@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+
+class TokenLimitExceededError(ValueError):
+    """Raised when prompt/input tokens exceed configured context window."""
+
 # ---------------------------------------------------------------------------
 # Config loading — reads researcher_ai/config/models.yaml once at import time
 # ---------------------------------------------------------------------------
@@ -111,6 +115,27 @@ _PROVIDER_CONFIG: dict[str, Any] = _MODEL_CONFIG.get("providers", {})
 def _provider_cfg(provider: str) -> dict[str, Any]:
     """Return the config block for a specific provider (empty dict if absent)."""
     return _PROVIDER_CONFIG.get(provider, {})
+
+
+def _fallback_chain_for_model_router(model_router: str) -> list[str]:
+    """Return ordered model-router chain: primary model followed by failovers."""
+    chain = [str(model_router)]
+    fallback_cfg = _MODEL_CONFIG.get("fallbacks", {})
+    fallback_raw = (
+        fallback_cfg.get(model_router)
+        or fallback_cfg.get(_normalize_model_router_for_litellm(model_router))
+        or []
+    )
+    if isinstance(fallback_raw, str):
+        fallback_candidates = [fallback_raw]
+    elif isinstance(fallback_raw, list):
+        fallback_candidates = [str(x) for x in fallback_raw if str(x).strip()]
+    else:
+        fallback_candidates = []
+    for candidate in fallback_candidates:
+        if candidate not in chain:
+            chain.append(candidate)
+    return chain
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +285,57 @@ def _safety_settings_for_model(llm_model: str) -> list[dict[str, str]] | None:
     return None
 
 
+def _max_context_tokens_for_model(llm_model: str) -> Optional[int]:
+    """Return configured max context window tokens for provider, if set."""
+    provider = _infer_provider_from_model_router(llm_model)
+    raw = _provider_cfg(provider).get("max_context_tokens")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Best-effort 429 / rate-limit classification."""
+    msg = str(exc).lower()
+    cls = type(exc).__name__.lower()
+    return (
+        "429" in msg
+        or "rate limit" in msg
+        or "too many requests" in msg
+        or "ratelimit" in cls
+    )
+
+
+def _preflight_token_budget(
+    *,
+    llm_model: str,
+    messages: list[dict[str, Any]],
+    max_output_tokens: int,
+) -> None:
+    """Fail fast when configured context budget would be exceeded."""
+    context_limit = _max_context_tokens_for_model(llm_model)
+    if not context_limit:
+        return
+    try:
+        from litellm import token_counter  # type: ignore[import]
+    except Exception:
+        return
+    try:
+        input_tokens = int(token_counter(model=llm_model, messages=messages))
+    except Exception:
+        return
+    total = input_tokens + int(max_output_tokens)
+    if total > context_limit:
+        raise TokenLimitExceededError(
+            f"Token budget exceeded for model '{llm_model}': "
+            f"input={input_tokens}, requested_output={int(max_output_tokens)}, "
+            f"total={total} > max_context_tokens={context_limit}."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Image validation
 # ---------------------------------------------------------------------------
@@ -315,32 +391,59 @@ def generate_text(
     cache: Optional["LLMCache"] = None,
 ) -> str:
     """Universal text-generation interface via LiteLLM."""
-    llm_model = _normalize_model_router_for_litellm(model_router)
-    normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
-    normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+    primary_llm_model = _normalize_model_router_for_litellm(model_router)
+    model_chain = _fallback_chain_for_model_router(model_router)
     if cache is not None:
-        cached = cache.get(prompt, system, llm_model)
+        cached = cache.get(prompt, system, primary_llm_model)
         if cached is not None:
             logger.debug("LLM text cache hit")
             return cached
 
-    api_key = _resolve_api_key_for_model_router(model_router)
     messages: list[dict[str, Any]] = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-
-    response = _litellm_completion(
-        model=llm_model,
-        messages=messages,
-        max_tokens=normalized_max_tokens,
-        temperature=normalized_temperature,
-        api_key=api_key,
-        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    )
+    response = None
+    active_llm_model = primary_llm_model
+    last_exc: Optional[Exception] = None
+    for idx, candidate_router in enumerate(model_chain):
+        llm_model = _normalize_model_router_for_litellm(candidate_router)
+        normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
+        normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+        try:
+            api_key = _resolve_api_key_for_model_router(candidate_router)
+            _preflight_token_budget(
+                llm_model=llm_model,
+                messages=messages,
+                max_output_tokens=normalized_max_tokens,
+            )
+            response = _litellm_completion(
+                model=llm_model,
+                messages=messages,
+                max_tokens=normalized_max_tokens,
+                temperature=normalized_temperature,
+                api_key=api_key,
+                timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            )
+            active_llm_model = llm_model
+            break
+        except Exception as exc:
+            last_exc = exc
+            if idx < len(model_chain) - 1 and _is_rate_limit_error(exc):
+                logger.warning(
+                    "Rate limit for model %s; retrying with fallback model %s",
+                    llm_model,
+                    _normalize_model_router_for_litellm(model_chain[idx + 1]),
+                )
+                continue
+            raise
+    if response is None:
+        raise last_exc or RuntimeError("LLM completion failed with no response.")
     text = _extract_message_text(response)
     if cache is not None:
-        cache.set(prompt, system, llm_model, text)
+        cache.set(prompt, system, primary_llm_model, text)
+    if active_llm_model != primary_llm_model:
+        logger.info("generate_text used fallback model %s for primary %s", active_llm_model, primary_llm_model)
     return text
 
 
@@ -385,9 +488,8 @@ def extract_structured_data(
     if not model_router:
         raise ValueError("extract_structured_data requires model_router.")
 
-    llm_model = _normalize_model_router_for_litellm(model_router)
-    normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
-    normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+    primary_llm_model = _normalize_model_router_for_litellm(model_router)
+    model_chain = _fallback_chain_for_model_router(model_router)
 
     image_bytes = image_bytes or []
     # Validate image sizes before making any API call.  Pass _MAX_IMAGE_BYTES
@@ -400,12 +502,10 @@ def extract_structured_data(
     # sort_keys=True ensures the cache key is stable regardless of dict insertion order.
     cache_key_extra = json.dumps(json_schema, sort_keys=True) + image_hash
     if cache is not None:
-        cached_text = cache.get(prompt, system + cache_key_extra, llm_model)
+        cached_text = cache.get(prompt, system + cache_key_extra, primary_llm_model)
         if cached_text is not None:
             logger.debug("LLM structured cache hit")
             return schema.model_validate_json(cached_text)
-
-    api_key = _resolve_api_key_for_model_router(model_router)
 
     user_content: Any
     if image_bytes:
@@ -436,83 +536,110 @@ def extract_structured_data(
         }
     )
 
-    kwargs: dict[str, Any] = {
-        "model": llm_model,
-        "messages": messages,
-        "max_tokens": normalized_max_tokens,
-        "temperature": normalized_temperature,
-        "api_key": api_key,
-        "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    }
-
-    # Inject provider safety settings from config (e.g. Gemini content filters).
-    safety = _safety_settings_for_model(llm_model)
-    if safety:
-        kwargs["safety_settings"] = safety
-
     strict_schema = json.loads(json.dumps(json_schema))
     strict_schema["additionalProperties"] = False
-    try:
-        response = _litellm_completion(
-            **kwargs,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema.__name__ or "ExtractionSchema",
-                    "strict": True,
-                    "schema": strict_schema,
-                },
-            },
-        )
-    except Exception as exc:
-        msg = str(exc).lower()
-        if "response_format" in msg or "schema" in msg or "unsupported" in msg:
+    last_exc: Optional[Exception] = None
+
+    for idx, candidate_router in enumerate(model_chain):
+        llm_model = _normalize_model_router_for_litellm(candidate_router)
+        normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
+        normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+        try:
+            api_key = _resolve_api_key_for_model_router(candidate_router)
+            kwargs: dict[str, Any] = {
+                "model": llm_model,
+                "messages": messages,
+                "max_tokens": normalized_max_tokens,
+                "temperature": normalized_temperature,
+                "api_key": api_key,
+                "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            }
+            # Inject provider safety settings from config (e.g. Gemini content filters).
+            safety = _safety_settings_for_model(llm_model)
+            if safety:
+                kwargs["safety_settings"] = safety
+            _preflight_token_budget(
+                llm_model=llm_model,
+                messages=messages,
+                max_output_tokens=normalized_max_tokens,
+            )
             try:
                 response = _litellm_completion(
                     **kwargs,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": schema.__name__ or "ExtractionSchema",
+                            "strict": True,
+                            "schema": strict_schema,
+                        },
+                    },
+                )
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "response_format" in msg or "schema" in msg or "unsupported" in msg:
+                    try:
+                        response = _litellm_completion(
+                            **kwargs,
+                            response_format={"type": "json_object"},
+                        )
+                    except Exception as inner_exc:
+                        inner_msg = str(inner_exc).lower()
+                        if not llm_model.startswith("gemini/") and "response_format" in inner_msg:
+                            response = _litellm_completion(**kwargs)
+                        else:
+                            raise inner_exc
+                else:
+                    raise exc
+
+            text = _strip_json_fences(_extract_message_text(response))
+            if not text:
+                # Guard against provider responses that return empty content despite 200.
+                retry_response = _litellm_completion(
+                    **kwargs,
                     response_format={"type": "json_object"},
                 )
-            except Exception as inner_exc:
-                inner_msg = str(inner_exc).lower()
-                if not llm_model.startswith("gemini/") and "response_format" in inner_msg:
-                    response = _litellm_completion(**kwargs)
+                text = _strip_json_fences(_extract_message_text(retry_response))
+                if not text and not llm_model.startswith("gemini/"):
+                    retry_response = _litellm_completion(**kwargs)
+                    text = _strip_json_fences(_extract_message_text(retry_response))
+                if not text:
+                    raise ValueError(f"Empty structured response from model '{llm_model}'.")
+            try:
+                result = schema.model_validate_json(text)
+            except Exception:
+                if llm_model.startswith("gemini/"):
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs["max_tokens"] = max(int(retry_kwargs.get("max_tokens", 0)), 800)
+                    retry_response = _litellm_completion(
+                        **retry_kwargs,
+                        response_format={"type": "json_object"},
+                    )
+                    retry_text = _strip_json_fences(_extract_message_text(retry_response))
+                    result = schema.model_validate_json(retry_text)
                 else:
-                    raise inner_exc
-        else:
-            raise exc
+                    raise
 
-    text = _strip_json_fences(_extract_message_text(response))
-    if not text:
-        # Guard against provider responses that return empty content despite 200.
-        retry_response = _litellm_completion(
-            **kwargs,
-            response_format={"type": "json_object"},
-        )
-        text = _strip_json_fences(_extract_message_text(retry_response))
-        if not text and not llm_model.startswith("gemini/"):
-            retry_response = _litellm_completion(**kwargs)
-            text = _strip_json_fences(_extract_message_text(retry_response))
-        if not text:
-            raise ValueError(f"Empty structured response from model '{llm_model}'.")
-    try:
-        result = schema.model_validate_json(text)
-    except Exception:
-        if llm_model.startswith("gemini/"):
-            retry_kwargs = dict(kwargs)
-            retry_kwargs["max_tokens"] = max(int(retry_kwargs.get("max_tokens", 0)), 800)
-            retry_response = _litellm_completion(
-                **retry_kwargs,
-                response_format={"type": "json_object"},
-            )
-            retry_text = _strip_json_fences(_extract_message_text(retry_response))
-            result = schema.model_validate_json(retry_text)
-        else:
+            if cache is not None:
+                cache.set(prompt, system + cache_key_extra, primary_llm_model, result.model_dump_json())
+            if llm_model != primary_llm_model:
+                logger.info(
+                    "extract_structured_data used fallback model %s for primary %s",
+                    llm_model,
+                    primary_llm_model,
+                )
+            return result
+        except Exception as exc:
+            last_exc = exc
+            if idx < len(model_chain) - 1 and _is_rate_limit_error(exc):
+                logger.warning(
+                    "Rate limit for model %s; retrying structured extraction with fallback %s",
+                    llm_model,
+                    _normalize_model_router_for_litellm(model_chain[idx + 1]),
+                )
+                continue
             raise
-
-    if cache is not None:
-        cache.set(prompt, system + cache_key_extra, llm_model, result.model_dump_json())
-
-    return result
+    raise last_exc or RuntimeError("Structured extraction failed with no response.")
 
 
 def extract_structured_data_with_tools(
@@ -528,10 +655,8 @@ def extract_structured_data_with_tools(
     max_tool_rounds: int = 6,
 ) -> T:
     """Structured extraction with tool-calling loop via LiteLLM."""
-    llm_model = _normalize_model_router_for_litellm(model_router)
-    normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
-    normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
-    api_key = _resolve_api_key_for_model_router(model_router)
+    primary_llm_model = _normalize_model_router_for_litellm(model_router)
+    model_chain = _fallback_chain_for_model_router(model_router)
     messages: list[dict[str, Any]] = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -546,75 +671,123 @@ def extract_structured_data_with_tools(
         }
     )
 
-    for _ in range(max_tool_rounds):
-        response = _litellm_completion(
-            model=llm_model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-            max_tokens=normalized_max_tokens,
-            temperature=normalized_temperature,
-            api_key=api_key,
-            timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-        )
-        msg = response.choices[0].message
-        tool_calls = getattr(msg, "tool_calls", None) or []
-        if not tool_calls:
-            text = _strip_json_fences(_extract_message_text(response))
+    last_exc: Optional[Exception] = None
+    for idx, candidate_router in enumerate(model_chain):
+        llm_model = _normalize_model_router_for_litellm(candidate_router)
+        normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
+        normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+        try:
+            api_key = _resolve_api_key_for_model_router(candidate_router)
+            safety = _safety_settings_for_model(llm_model)
+
+            for _ in range(max_tool_rounds):
+                _preflight_token_budget(
+                    llm_model=llm_model,
+                    messages=messages,
+                    max_output_tokens=normalized_max_tokens,
+                )
+                call_kwargs: dict[str, Any] = {
+                    "model": llm_model,
+                    "messages": messages,
+                    "tools": tools,
+                    "tool_choice": "auto",
+                    "max_tokens": normalized_max_tokens,
+                    "temperature": normalized_temperature,
+                    "api_key": api_key,
+                    "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                }
+                if safety:
+                    call_kwargs["safety_settings"] = safety
+                response = _litellm_completion(**call_kwargs)
+                msg = response.choices[0].message
+                tool_calls = getattr(msg, "tool_calls", None) or []
+                if not tool_calls:
+                    text = _strip_json_fences(_extract_message_text(response))
+                    if llm_model != primary_llm_model:
+                        logger.info(
+                            "extract_structured_data_with_tools used fallback model %s for primary %s",
+                            llm_model,
+                            primary_llm_model,
+                        )
+                    return schema.model_validate_json(text)
+
+                assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+                assistant_tool_calls: list[dict[str, Any]] = []
+                for tc in tool_calls:
+                    tc_id = getattr(tc, "id", None) or tc.get("id")
+                    fn_obj = getattr(tc, "function", None) or tc.get("function", {})
+                    fn_name = getattr(fn_obj, "name", None) or fn_obj.get("name")
+                    fn_args = getattr(fn_obj, "arguments", None) or fn_obj.get("arguments", "{}")
+                    assistant_tool_calls.append(
+                        {
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": fn_name, "arguments": fn_args},
+                        }
+                    )
+                assistant_msg["tool_calls"] = assistant_tool_calls
+                messages.append(assistant_msg)
+
+                for call in assistant_tool_calls:
+                    fn_name = call["function"]["name"]
+                    args_raw = call["function"]["arguments"] or "{}"
+                    try:
+                        args = json.loads(args_raw)
+                    except json.JSONDecodeError:
+                        args = {}
+                    handler = tool_handlers.get(fn_name)
+                    if handler is None:
+                        result_str = f"Unknown tool: {fn_name}"
+                    else:
+                        try:
+                            result_str = handler(args)
+                        except Exception as exc:  # pragma: no cover - defensive
+                            result_str = f"Tool error: {type(exc).__name__}: {exc}"
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "name": fn_name,
+                            "content": result_str,
+                        }
+                    )
+
+            # Fallback after exhausting tool rounds.
+            _preflight_token_budget(
+                llm_model=llm_model,
+                messages=messages,
+                max_output_tokens=normalized_max_tokens,
+            )
+            final_kwargs: dict[str, Any] = {
+                "model": llm_model,
+                "messages": messages,
+                "max_tokens": normalized_max_tokens,
+                "temperature": normalized_temperature,
+                "api_key": api_key,
+                "timeout": DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            }
+            if safety:
+                final_kwargs["safety_settings"] = safety
+            final = _litellm_completion(**final_kwargs)
+            text = _strip_json_fences(_extract_message_text(final))
+            if llm_model != primary_llm_model:
+                logger.info(
+                    "extract_structured_data_with_tools used fallback model %s for primary %s",
+                    llm_model,
+                    primary_llm_model,
+                )
             return schema.model_validate_json(text)
-
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
-        assistant_tool_calls: list[dict[str, Any]] = []
-        for tc in tool_calls:
-            tc_id = getattr(tc, "id", None) or tc.get("id")
-            fn_obj = getattr(tc, "function", None) or tc.get("function", {})
-            fn_name = getattr(fn_obj, "name", None) or fn_obj.get("name")
-            fn_args = getattr(fn_obj, "arguments", None) or fn_obj.get("arguments", "{}")
-            assistant_tool_calls.append(
-                {
-                    "id": tc_id,
-                    "type": "function",
-                    "function": {"name": fn_name, "arguments": fn_args},
-                }
-            )
-        assistant_msg["tool_calls"] = assistant_tool_calls
-        messages.append(assistant_msg)
-
-        for call in assistant_tool_calls:
-            fn_name = call["function"]["name"]
-            args_raw = call["function"]["arguments"] or "{}"
-            try:
-                args = json.loads(args_raw)
-            except json.JSONDecodeError:
-                args = {}
-            handler = tool_handlers.get(fn_name)
-            if handler is None:
-                result_str = f"Unknown tool: {fn_name}"
-            else:
-                try:
-                    result_str = handler(args)
-                except Exception as exc:  # pragma: no cover - defensive
-                    result_str = f"Tool error: {type(exc).__name__}: {exc}"
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "name": fn_name,
-                    "content": result_str,
-                }
-            )
-
-    # Fallback after exhausting tool rounds.
-    final = _litellm_completion(
-        model=llm_model,
-        messages=messages,
-        max_tokens=normalized_max_tokens,
-        temperature=normalized_temperature,
-        api_key=api_key,
-        timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    )
-    text = _strip_json_fences(_extract_message_text(final))
-    return schema.model_validate_json(text)
+        except Exception as exc:
+            last_exc = exc
+            if idx < len(model_chain) - 1 and _is_rate_limit_error(exc):
+                logger.warning(
+                    "Rate limit for model %s; retrying tool extraction with fallback %s",
+                    llm_model,
+                    _normalize_model_router_for_litellm(model_chain[idx + 1]),
+                )
+                continue
+            raise
+    raise last_exc or RuntimeError("Tool extraction failed with no response.")
 
 
 # ---------------------------------------------------------------------------
