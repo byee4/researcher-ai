@@ -90,6 +90,11 @@ def main() -> int:
         default="",
         help="Optional JSON output path (prints JSON to stdout if omitted).",
     )
+    parser.add_argument(
+        "--trace-output",
+        default="",
+        help="Optional per-step telemetry JSON output path.",
+    )
     args = parser.parse_args()
 
     source_type = PaperSource.PMID if args.source_type == "pmid" else PaperSource.PDF
@@ -195,6 +200,12 @@ def main() -> int:
         print(f"Wrote {path}")
     else:
         print(json.dumps(payload, indent=2))
+
+    if args.trace_output:
+        trace_path = Path(args.trace_output)
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text(json.dumps(fp.get_trace_events(), indent=2))
+        print(f"Wrote {trace_path}")
     return 0
 
 

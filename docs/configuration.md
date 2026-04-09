@@ -28,11 +28,13 @@ Use this file to:
 - `RESEARCHER_AI_MODEL`: default model router (default `gpt-5.4`)
 - `RESEARCHER_AI_LLM_TIMEOUT_SECONDS`: LLM timeout override
 - `RESEARCHER_AI_PROVIDER_MAX_RETRIES`: provider SDK retry cap (default `0`; prevents hidden timeout multiplication)
+- `RESEARCHER_AI_LITELLM_VERBOSE`: enable LiteLLM debug/verbose logging (`1/true`)
 - `RESEARCHER_AI_MAX_IMAGE_BYTES`: image-size cap for multimodal calls
 - `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS`: optional hard timeout for orchestrator figure parsing; degrades to empty figures on timeout
 - `RESEARCHER_AI_SKIP_FIGURES`: `1/true` skips figure parsing (recovery mode)
 - `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS`: optional timeout for panel decomposition requests
 - `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS`: per-paper timeout budget before figure LLM circuit breaker opens (default `3`)
+- `RESEARCHER_AI_FIGURE_TRACE_PATH`: optional path to write per-step figure telemetry JSON trace
 - `RESEARCHER_AI_BIOWORKFLOW_MODE`: BioWorkflow rollout mode (`off`, `warn`, `on`)
   - `off`: skip validation stage in orchestrator
   - `warn` (default): run validation and continue with warnings
