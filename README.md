@@ -81,27 +81,27 @@ python scripts/estimate_figure_parse_latency.py \
 
 Most common settings:
 
-- `OPENAI_API_KEY`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (provider keys)
-- `RESEARCHER_AI_MODEL` (default model router, default: `gpt-5.4`)
-- `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` (LLM request timeout)
-- `RESEARCHER_AI_LITELLM_VERBOSE` (`1/true` enables LiteLLM debug logging for diagnosis)
-- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS` (optional hard timeout for orchestrator `parse_figures` node; degrades to empty figures on timeout)
-- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS` (per-figure floor used to auto-scale orchestrator figure timeout; default `60`)
-- `RESEARCHER_AI_SKIP_FIGURES` (`1/true` skips figure parsing for recovery runs)
-- `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS` (optional timeout override for per-figure subfigure decomposition calls)
-- `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS` (per-paper timeout budget before figure LLM circuit breaker opens; default `3`)
-- `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS` (max output tokens for panel decomposition; default `1200`)
-- `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS` (max output tokens for figure purpose/title extraction; default `600`)
-- `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (max output tokens for figure methods/dataset extraction; default `350`)
-- `RESEARCHER_AI_FIGURE_TRACE_PATH` (optional per-step figure telemetry JSON output path)
-- `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default `warn`)
+- `OPENAI_API_KEY`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (provider keys; no default)
+- `RESEARCHER_AI_MODEL` (default: `gpt-5.4`; stable primary routing model)
+- `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` (default: `90`; good headroom for long structured calls)
+- `RESEARCHER_AI_LITELLM_VERBOSE` (default: `0`; enable only for diagnostics to reduce noisy/sensitive logs)
+- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS` (default: `0`; disables hard global figure timeout to avoid full figure-drop regressions)
+- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS` (default: `60`; adaptive per-figure floor informed by measured ~38–52s figure parse times)
+- `RESEARCHER_AI_SKIP_FIGURES` (default: `0`; normal runs should parse figures)
+- `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS` (default: `0`; no per-call hard timeout, since decomposition can legitimately take 30–45s)
+- `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS` (default: `3`; circuit-breaker budget per paper)
+- `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS` (default: `1200`; controls long-tail latency for panel decomposition)
+- `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS` (default: `600`; sufficient for purpose/title extraction without excess latency)
+- `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (default: `350`; sufficient for short methods/dataset extraction tasks)
+- `RESEARCHER_AI_FIGURE_TRACE_PATH` (default: unset; set only when collecting diagnostics)
+- `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default: `warn`)
   - `off`: skip BioWorkflow validation stage
   - `warn`: validate and continue (non-blocking)
   - `on`: strict mode; if ungrounded fields are detected, run ends in `needs_human_review`
-- `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` (hard cap for iterative retrieval per stage)
-- `RESEARCHER_AI_BIOC_ENABLED` (enable/disable BioC enrichment)
-- `RESEARCHER_AI_FIGURE_CALIBRATION` (on/off)
-- `RESEARCHER_AI_HPC_PROFILE` (`tscc` or `local`)
+- `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` (default: `2`; limits call explosion while preserving recall)
+- `RESEARCHER_AI_BIOC_ENABLED` (default: `1`; enables richer grounding context)
+- `RESEARCHER_AI_FIGURE_CALIBRATION` (default: `on`; keeps calibration active in standard runs)
+- `RESEARCHER_AI_HPC_PROFILE` (default: `tscc`; cluster-first runtime profile)
 
 Model/provider routing defaults are defined in:
 `researcher_ai/config/models.yaml`
