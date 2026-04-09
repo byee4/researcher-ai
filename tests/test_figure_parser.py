@@ -9,6 +9,7 @@ Testing strategy:
 """
 
 import textwrap
+import json
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -126,6 +127,10 @@ def _make_parser() -> FigureParser:
     parser.max_figure_llm_timeouts_per_paper = 3
     parser.subfigure_timeout_seconds = 0.0
     parser.calibration_engine = FigureCalibrationEngine()
+    parser.figure_trace_path = ""
+    parser._figure_trace_events = []
+    parser._active_paper_ref = ""
+    parser._active_figure_id = ""
     return parser
 
 
@@ -1095,6 +1100,24 @@ class TestParseAllFigures:
         assert len(figs) == 2
         assert "subfigure_decomposition_timeout" in figs[0].parse_warnings
         assert "figure_llm_circuit_breaker_open" in figs[1].parse_warnings
+
+    @patch("researcher_ai.parsers.figure_parser.ask_claude_structured")
+    def test_writes_trace_artifact_with_step_events(self, mock_structured, tmp_path: Path):
+        mock_structured.side_effect = lambda prompt, output_schema, **kw: self._mock_side_effect(output_schema)
+        parser = _make_parser()
+        parser.figure_trace_path = str(tmp_path / "figure_trace.json")
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1"]})
+
+        def _fake_parse_from_context(fig_id, caption, in_text, **kwargs):  # noqa: ARG001
+            return parser._stub_figure(fig_id, caption=caption, in_text=in_text)
+
+        parser._parse_figure_from_context = _fake_parse_from_context
+        parser.parse_all_figures(paper)
+        trace_path = Path(parser.figure_trace_path)
+        assert trace_path.exists()
+        payload = json.loads(trace_path.read_text())
+        assert payload, "Expected at least one trace event"
+        assert any(evt.get("step") == "figure_parse" for evt in payload)
 
 
 # ---------------------------------------------------------------------------

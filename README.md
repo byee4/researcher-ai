@@ -65,7 +65,8 @@ python scripts/estimate_figure_parse_latency.py \
   --source-type pmid \
   --max-figures 10 \
   --max-total-seconds 240 \
-  --output /tmp/figure_latency_40456907.json
+  --output /tmp/figure_latency_40456907.json \
+  --trace-output /tmp/figure_latency_40456907_trace.json
 ```
 
 ## Core Entry Points
@@ -87,6 +88,7 @@ Most common settings:
 - `RESEARCHER_AI_SKIP_FIGURES` (`1/true` skips figure parsing for recovery runs)
 - `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS` (optional timeout override for per-figure subfigure decomposition calls)
 - `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS` (per-paper timeout budget before figure LLM circuit breaker opens; default `3`)
+- `RESEARCHER_AI_FIGURE_TRACE_PATH` (optional per-step figure telemetry JSON output path)
 - `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default `warn`)
   - `off`: skip BioWorkflow validation stage
   - `warn`: validate and continue (non-blocking)

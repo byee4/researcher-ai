@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -365,6 +366,58 @@ class FigureParser:
         self.subfigure_timeout_seconds = float(
             os.environ.get("RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS", "0")
         )
+        self.figure_trace_path = os.environ.get("RESEARCHER_AI_FIGURE_TRACE_PATH", "").strip()
+        self._figure_trace_events: list[dict[str, object]] = []
+        self._active_paper_ref: str = ""
+        self._active_figure_id: str = ""
+
+    def get_trace_events(self) -> list[dict[str, object]]:
+        """Return a copy of the most recent per-step figure telemetry events."""
+        return [dict(evt) for evt in self._figure_trace_events]
+
+    def _start_paper_trace(self, paper: Paper) -> None:
+        self._active_paper_ref = paper.pmid or paper.pmcid or paper.doi or paper.source_path or ""
+        self._figure_trace_events = []
+
+    def _record_trace_event(
+        self,
+        *,
+        figure_id: str,
+        step: str,
+        duration_s: float,
+        status: str,
+        model: str = "",
+        timeout_s: float = 0.0,
+        error_class: str = "",
+        error_message: str = "",
+        fell_back: bool = False,
+        stubbed: bool = False,
+    ) -> None:
+        self._figure_trace_events.append(
+            {
+                "paper_ref": self._active_paper_ref,
+                "figure_id": figure_id,
+                "step": step,
+                "duration_s": round(float(duration_s), 4),
+                "status": status,
+                "model": model,
+                "timeout_s": float(timeout_s),
+                "error_class": error_class,
+                "error_message": error_message,
+                "fell_back": bool(fell_back),
+                "stubbed": bool(stubbed),
+            }
+        )
+
+    def _flush_trace_artifact(self) -> None:
+        if not self.figure_trace_path:
+            return
+        try:
+            trace_path = Path(self.figure_trace_path)
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            trace_path.write_text(json.dumps(self._figure_trace_events, indent=2))
+        except Exception as exc:
+            logger.warning("Failed to write figure trace artifact (%s): %s", exc.__class__.__name__, exc)
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -378,6 +431,7 @@ class FigureParser:
             List of Figure objects ordered by figure_id.
         """
         figures: list[Figure] = []
+        self._start_paper_trace(paper)
 
         # Primary source is Paper.figure_ids from PaperParser. If empty, recover
         # figure IDs from section/raw text so FigureParser can still run when
@@ -406,6 +460,8 @@ class FigureParser:
 
         timeout_count = 0
         for fig_id in figure_ids:
+            self._active_figure_id = fig_id
+            figure_t0 = time.perf_counter()
             if (
                 self.max_figure_llm_timeouts_per_paper > 0
                 and timeout_count >= self.max_figure_llm_timeouts_per_paper
@@ -428,6 +484,16 @@ class FigureParser:
                     "preview_url": preview_map.get(fig_id),
                 })
                 figures.append(stub)
+                self._record_trace_event(
+                    figure_id=fig_id,
+                    step="figure_parse",
+                    duration_s=time.perf_counter() - figure_t0,
+                    status="skipped_circuit_breaker",
+                    stubbed=True,
+                    timeout_s=self.subfigure_timeout_seconds,
+                    error_class="FigureCircuitBreakerOpen",
+                    error_message="Per-paper timeout budget exceeded.",
+                )
                 continue
             logger.info("Parsing %s", fig_id)
             parse_warnings: list[str] = []
@@ -461,6 +527,16 @@ class FigureParser:
                 figures.append(multimodal_figure)
                 if self._warnings_contain_timeout(multimodal_figure.parse_warnings):
                     timeout_count += 1
+                self._record_trace_event(
+                    figure_id=fig_id,
+                    step="figure_parse",
+                    duration_s=time.perf_counter() - figure_t0,
+                    status="ok",
+                    model=self.vision_model,
+                    timeout_s=self.subfigure_timeout_seconds,
+                    fell_back=bool(multimodal_figure.parse_warnings),
+                    stubbed=False,
+                )
                 continue
             if paper.source == PaperSource.PDF:
                 stub = self._stub_figure(
@@ -475,6 +551,15 @@ class FigureParser:
                     "preview_url": preview_map.get(fig_id),
                 })
                 figures.append(stub)
+                self._record_trace_event(
+                    figure_id=fig_id,
+                    step="figure_parse",
+                    duration_s=time.perf_counter() - figure_t0,
+                    status="stubbed_pdf",
+                    timeout_s=self.subfigure_timeout_seconds,
+                    stubbed=True,
+                )
+                self._active_figure_id = ""
                 continue
             bioc_fig_passages, bioc_results_passages = self._get_bioc_context_for_figure(
                 paper,
@@ -502,6 +587,16 @@ class FigureParser:
                 figures.append(figure)
                 if self._warnings_contain_timeout(figure.parse_warnings):
                     timeout_count += 1
+                self._record_trace_event(
+                    figure_id=fig_id,
+                    step="figure_parse",
+                    duration_s=time.perf_counter() - figure_t0,
+                    status="ok",
+                    model=self.llm_model,
+                    timeout_s=self.subfigure_timeout_seconds,
+                    fell_back=bool(figure.parse_warnings),
+                    stubbed=False,
+                )
             except Exception as exc:
                 logger.warning(
                     "Failed to parse %s (%s): %s",
@@ -516,6 +611,19 @@ class FigureParser:
                     "preview_url": preview_map.get(fig_id),
                 })
                 figures.append(stub)
+                self._record_trace_event(
+                    figure_id=fig_id,
+                    step="figure_parse",
+                    duration_s=time.perf_counter() - figure_t0,
+                    status="error",
+                    model=self.llm_model,
+                    timeout_s=self.subfigure_timeout_seconds,
+                    error_class=exc.__class__.__name__,
+                    error_message=str(exc),
+                    stubbed=True,
+                )
+            self._active_figure_id = ""
+        self._flush_trace_artifact()
         return figures
 
     @staticmethod
@@ -978,8 +1086,18 @@ class FigureParser:
     ) -> list[SubFigure]:
         """Use LLM to decompose a figure caption into panel-level SubFigure objects."""
         if not caption.strip():
+            self._record_trace_event(
+                figure_id=figure_id,
+                step="decompose_subfigures",
+                duration_s=0.0,
+                status="skipped_no_caption",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+                stubbed=True,
+            )
             return []
 
+        t0 = time.perf_counter()
         context_snippet = "\n".join(in_text[:5])  # top 5 in-text sentences
         prompt = (
             f"Analyse this figure caption and in-text references for {figure_id}.\n\n"
@@ -1013,11 +1131,39 @@ class FigureParser:
                     model=self.llm_model,
                     cache=self.cache,
                 )
+            self._record_trace_event(
+                figure_id=figure_id,
+                step="decompose_subfigures",
+                duration_s=time.perf_counter() - t0,
+                status="ok",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+            )
             return [_subfigure_from_meta(m) for m in result.subfigures]
         except Exception as exc:
             detail = f"{exc.__class__.__name__}: {exc}"
             if "timeout" in detail.lower():
+                self._record_trace_event(
+                    figure_id=figure_id,
+                    step="decompose_subfigures",
+                    duration_s=time.perf_counter() - t0,
+                    status="timeout",
+                    model=self.llm_model,
+                    timeout_s=self.subfigure_timeout_seconds,
+                    error_class=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
                 raise SubfigureDecompositionTimeoutError(detail) from exc
+            self._record_trace_event(
+                figure_id=figure_id,
+                step="decompose_subfigures",
+                duration_s=time.perf_counter() - t0,
+                status="error",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+                error_class=exc.__class__.__name__,
+                error_message=str(exc),
+            )
             logger.warning(
                 "Subfigure decomposition failed for %s (%s): %s",
                 figure_id,
@@ -1030,6 +1176,7 @@ class FigureParser:
         self, figure_id: str, caption: str, in_text: list[str]
     ) -> _FigurePurpose:
         """LLM: write a one-paragraph purpose and a short title for the figure."""
+        t0 = time.perf_counter()
         context_snippet = "\n".join(in_text[:8])
         prompt = (
             f"Given the caption and selected in-text references for {figure_id}, "
@@ -1040,14 +1187,35 @@ class FigureParser:
             f"IN-TEXT CONTEXT:\n{context_snippet or '(none)'}"
         )
         try:
-            return _extract_structured_data(
+            result = _extract_structured_data(
                 prompt=prompt,
                 output_schema=_FigurePurpose,
                 system=SYSTEM_FIGURE_PARSER,
                 model=self.llm_model,
                 cache=self.cache,
             )
+            self._record_trace_event(
+                figure_id=figure_id,
+                step="determine_purpose",
+                duration_s=time.perf_counter() - t0,
+                status="ok",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+            )
+            return result
         except Exception as exc:
+            self._record_trace_event(
+                figure_id=figure_id,
+                step="determine_purpose",
+                duration_s=time.perf_counter() - t0,
+                status="error",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+                error_class=exc.__class__.__name__,
+                error_message=str(exc),
+                fell_back=True,
+                stubbed=True,
+            )
             logger.warning(
                 "Purpose extraction failed for %s (%s): %s",
                 figure_id,
@@ -1083,12 +1251,21 @@ class FigureParser:
         accessions = sorted(grounded)
 
         if accessions and strict_regex_only:
+            self._record_trace_event(
+                figure_id=self._active_figure_id,
+                step="identify_datasets_regex",
+                duration_s=0.0,
+                status="ok",
+                model="regex",
+                timeout_s=0.0,
+            )
             return accessions
 
         # LLM pass — either as fallback (no regex hits) or to supplement regex hits
         if not combined.strip():
             return accessions  # already empty
         try:
+            t0 = time.perf_counter()
             result = _extract_structured_data(
                 prompt=(
                     "Extract any dataset or repository accession identifiers from this text. "
@@ -1108,8 +1285,27 @@ class FigureParser:
             ]
             # Accept only IDs grounded in source text to prevent hallucinations.
             llm_grounded = [d for d in llm_candidates if d in grounded]
+            self._record_trace_event(
+                figure_id=self._active_figure_id,
+                step="identify_datasets_llm",
+                duration_s=time.perf_counter() - t0,
+                status="ok",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+            )
             return sorted(set(accessions) | set(llm_grounded))
         except Exception as exc:
+            self._record_trace_event(
+                figure_id=self._active_figure_id,
+                step="identify_datasets_llm",
+                duration_s=time.perf_counter() - t0,
+                status="error",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+                error_class=exc.__class__.__name__,
+                error_message=str(exc),
+                fell_back=True,
+            )
             logger.warning(
                 "Dataset extraction (LLM) failed (%s): %s",
                 exc.__class__.__name__,
@@ -1135,6 +1331,7 @@ class FigureParser:
         if not combined:
             return []
         try:
+            t0 = time.perf_counter()
             result = _extract_structured_data(
                 prompt=(
                     "List the distinct assay or experimental method names referenced "
@@ -1149,10 +1346,29 @@ class FigureParser:
                 cache=self.cache,
             )
             methods = [m for m in result.methods if m and m.strip()]
+            self._record_trace_event(
+                figure_id=self._active_figure_id,
+                step="identify_methods_llm",
+                duration_s=time.perf_counter() - t0,
+                status="ok",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+            )
             if methods:
                 return methods
             return self._identify_methods_regex(combined)
         except Exception as exc:
+            self._record_trace_event(
+                figure_id=self._active_figure_id,
+                step="identify_methods_llm",
+                duration_s=time.perf_counter() - t0,
+                status="error",
+                model=self.llm_model,
+                timeout_s=self.subfigure_timeout_seconds,
+                error_class=exc.__class__.__name__,
+                error_message=str(exc),
+                fell_back=True,
+            )
             logger.warning(
                 "Method extraction failed (%s): %s",
                 exc.__class__.__name__,

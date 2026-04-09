@@ -33,6 +33,7 @@ Use this file to:
 - `RESEARCHER_AI_SKIP_FIGURES`: `1/true` skips figure parsing (recovery mode)
 - `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS`: optional timeout for panel decomposition requests
 - `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS`: per-paper timeout budget before figure LLM circuit breaker opens (default `3`)
+- `RESEARCHER_AI_FIGURE_TRACE_PATH`: optional path to write per-step figure telemetry JSON trace
 - `RESEARCHER_AI_BIOWORKFLOW_MODE`: BioWorkflow rollout mode (`off`, `warn`, `on`)
   - `off`: skip validation stage in orchestrator
   - `warn` (default): run validation and continue with warnings
