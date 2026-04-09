@@ -27,6 +27,7 @@ Use this file to:
 
 - `RESEARCHER_AI_MODEL`: default model router (default `gpt-5.4`)
 - `RESEARCHER_AI_LLM_TIMEOUT_SECONDS`: LLM timeout override
+- `RESEARCHER_AI_PROVIDER_MAX_RETRIES`: provider SDK retry cap (default `0`; prevents hidden timeout multiplication)
 - `RESEARCHER_AI_MAX_IMAGE_BYTES`: image-size cap for multimodal calls
 - `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS`: optional hard timeout for orchestrator figure parsing; degrades to empty figures on timeout
 - `RESEARCHER_AI_SKIP_FIGURES`: `1/true` skips figure parsing (recovery mode)
