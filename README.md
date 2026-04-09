@@ -94,6 +94,7 @@ Most common settings:
 - `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS` (default: `600`; sufficient for purpose/title extraction without excess latency)
 - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (default: `350`; sufficient for short methods/dataset extraction tasks)
 - `RESEARCHER_AI_FIGURE_TRACE_PATH` (default: unset; set only when collecting diagnostics)
+- Figure parse warnings now include `subfigure_decomposition_empty_response` when panel decomposition receives persistently empty structured output from the LLM and falls back to best-effort parsing.
 - `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default: `warn`)
   - `off`: skip BioWorkflow validation stage
   - `warn`: validate and continue (non-blocking)

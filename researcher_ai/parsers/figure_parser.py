@@ -60,6 +60,10 @@ class SubfigureDecompositionTimeoutError(TimeoutError):
     """Raised when panel decomposition times out and should trip circuit breakers."""
 
 
+class SubfigureDecompositionEmptyResponseError(ValueError):
+    """Raised when panel decomposition receives persistently empty structured output."""
+
+
 def _extract_structured_data(*args, **kwargs):
     return ask_claude_structured(*args, **kwargs)
 
@@ -909,6 +913,15 @@ class FigureParser:
         timed_out = False
         try:
             subfigures = self._decompose_subfigures(figure_id, enriched_caption, enriched_in_text)
+        except SubfigureDecompositionEmptyResponseError as exc:
+            logger.warning(
+                "Subfigure decomposition returned empty structured response for %s (%s): %s",
+                figure_id,
+                exc.__class__.__name__,
+                exc,
+            )
+            parse_warnings.append("subfigure_decomposition_empty_response")
+            subfigures = []
         except SubfigureDecompositionTimeoutError as exc:
             logger.warning(
                 "Subfigure decomposition timed out for %s (%s): %s",
@@ -1168,6 +1181,21 @@ class FigureParser:
                     error_message=str(exc),
                 )
                 raise SubfigureDecompositionTimeoutError(detail) from exc
+            if (
+                isinstance(exc, ValueError)
+                and "empty structured response from model" in detail.lower()
+            ):
+                self._record_trace_event(
+                    figure_id=figure_id,
+                    step="decompose_subfigures",
+                    duration_s=time.perf_counter() - t0,
+                    status="empty_response",
+                    model=self.llm_model,
+                    timeout_s=self.subfigure_timeout_seconds,
+                    error_class=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
+                raise SubfigureDecompositionEmptyResponseError(detail) from exc
             self._record_trace_event(
                 figure_id=figure_id,
                 step="decompose_subfigures",

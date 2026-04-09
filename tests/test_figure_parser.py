@@ -32,6 +32,7 @@ from researcher_ai.models.paper import Paper, PaperSource, PaperType, Section
 from researcher_ai.models.paper import BioCPassageContext
 from researcher_ai.parsers.figure_parser import (
     FigureParser,
+    SubfigureDecompositionEmptyResponseError,
     SubfigureDecompositionTimeoutError,
     _SubFigureList,
     _SubFigureMeta,
@@ -914,6 +915,34 @@ class TestParseFigure:
         assert "figure_llm_followups_skipped_after_timeout" in fig.parse_warnings
         assert called["purpose"] == 0
         assert called["methods"] == 0
+
+    def test_empty_subfigure_response_adds_parse_warning(self, monkeypatch):
+        parser = _make_parser()
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1"]})
+        called = {"purpose": 0, "methods": 0}
+
+        def _empty(*args, **kwargs):  # noqa: ARG001
+            raise SubfigureDecompositionEmptyResponseError(
+                "ValueError: Empty structured response from model 'openai/gpt-5.4'."
+            )
+
+        def _purpose(*args, **kwargs):  # noqa: ARG001
+            called["purpose"] += 1
+            return _FigurePurpose(purpose="x", title="x")
+
+        def _methods(*args, **kwargs):  # noqa: ARG001
+            called["methods"] += 1
+            return ["RNA-seq"]
+
+        monkeypatch.setattr(parser, "_decompose_subfigures", _empty)
+        monkeypatch.setattr(parser, "_determine_purpose", _purpose)
+        monkeypatch.setattr(parser, "_identify_methods", _methods)
+
+        fig = parser.parse_figure(paper, "Figure 1")
+        assert "subfigure_decomposition_empty_response" in fig.parse_warnings
+        assert "figure_llm_followups_skipped_after_timeout" not in fig.parse_warnings
+        assert called["purpose"] == 1
+        assert called["methods"] == 1
 
 
 # ---------------------------------------------------------------------------

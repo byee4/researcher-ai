@@ -40,6 +40,10 @@ class TokenLimitExceededError(ValueError):
     """Raised when prompt/input tokens exceed configured context window."""
 
 
+class EmptyStructuredResponseError(ValueError):
+    """Raised when a structured extraction call returns no content after retries."""
+
+
 class LLMStreamChunk(BaseModel):
     """Unified streaming chunk payload across providers."""
 
@@ -424,6 +428,14 @@ def _is_transient_provider_error(exc: Exception) -> bool:
         or " 503" in msg
         or " 504" in msg
     )
+
+
+def _is_empty_structured_response_error(exc: Exception) -> bool:
+    """Classify persistent empty structured payloads as failover-eligible."""
+    if isinstance(exc, EmptyStructuredResponseError):
+        return True
+    msg = str(exc).lower()
+    return "empty structured response from model" in msg
 
 
 def _rate_limit_retry_limit() -> int:
@@ -905,7 +917,9 @@ def extract_structured_data(
                     retry_response = _litellm_completion(**kwargs)
                     text = _strip_json_fences(_extract_message_text(retry_response))
                 if not text:
-                    raise ValueError(f"Empty structured response from model '{llm_model}'.")
+                    raise EmptyStructuredResponseError(
+                        f"Empty structured response from model '{llm_model}'."
+                    )
             try:
                 result = schema.model_validate_json(text)
             except Exception:
@@ -932,7 +946,11 @@ def extract_structured_data(
             return result
         except Exception as exc:
             last_exc = exc
-            if idx < len(model_chain) - 1 and (_is_rate_limit_error(exc) or _is_transient_provider_error(exc)):
+            if idx < len(model_chain) - 1 and (
+                _is_rate_limit_error(exc)
+                or _is_transient_provider_error(exc)
+                or _is_empty_structured_response_error(exc)
+            ):
                 logger.warning(
                     "Failing over structured extraction from %s to %s after %s",
                     llm_model,

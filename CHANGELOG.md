@@ -10,6 +10,7 @@ This changelog was generated from archived markdown in `docs/previous/` on 2026-
     - `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS`
     - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS`
 - Added regression tests and configuration/docs updates for timeout observability and controls.
+- bugfix: fail over structured extraction when primary model returns persistently empty structured content, and surface `subfigure_decomposition_empty_response` in figure `parse_warnings` for observability.
 
 ## 2026-04-08 (v2.1.1)
 - Documented BioWorkflow rollout controls and strict-mode fallback behavior across README and docs.

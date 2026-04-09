@@ -410,6 +410,7 @@ def test_persistently_empty_response_raises(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setattr("researcher_ai.utils.llm._MODEL_CONFIG", {"fallbacks": {}})
 
     with pytest.raises(ValueError, match="Empty structured response"):
         extract_structured_data("gpt-5.4", "prompt", _Out)
@@ -615,6 +616,38 @@ def test_extract_structured_data_falls_back_on_rate_limit(monkeypatch):
     out = extract_structured_data("gpt-5.4", "prompt", _Out)
     assert out.value == "structured-fallback-ok"
     assert calls[:2] == ["openai/gpt-5.4", "anthropic/claude-4.6-opus"]
+
+
+def test_extract_structured_data_falls_back_on_empty_structured_response(monkeypatch):
+    """Persistent empty output on primary should fail over to fallback model."""
+    calls: list[str] = []
+
+    def _completion(**kwargs):
+        model = kwargs["model"]
+        calls.append(model)
+        if model == "openai/gpt-5.4":
+            return _DummyResponse("")
+        return _DummyResponse(json.dumps({"value": "fallback-after-empty"}))
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._MODEL_CONFIG",
+        {
+            "fallbacks": {"gpt-5.4": ["claude-4.6-opus"]},
+            "retry": {"rate_limit_max_retries": 0},
+        },
+    )
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "fallback-after-empty"
+    assert calls[:4] == [
+        "openai/gpt-5.4",
+        "openai/gpt-5.4",
+        "openai/gpt-5.4",
+        "anthropic/claude-4.6-opus",
+    ]
 
 
 def test_token_preflight_raises_before_api_call(monkeypatch):
