@@ -64,6 +64,7 @@ python scripts/estimate_figure_parse_latency.py \
   --source 40456907 \
   --source-type pmid \
   --max-figures 10 \
+  --max-total-seconds 240 \
   --output /tmp/figure_latency_40456907.json
 ```
 

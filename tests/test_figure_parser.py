@@ -31,6 +31,7 @@ from researcher_ai.models.paper import Paper, PaperSource, PaperType, Section
 from researcher_ai.models.paper import BioCPassageContext
 from researcher_ai.parsers.figure_parser import (
     FigureParser,
+    SubfigureDecompositionTimeoutError,
     _SubFigureList,
     _SubFigureMeta,
     _AxisMeta,
@@ -878,6 +879,32 @@ class TestParseFigure:
         assert len(by_label["a"].layers) == 1
         assert len(by_label["b"].layers) >= 2
         assert by_label["b"].layers[1].plot_type == PlotType.SWARM
+
+    def test_timeout_skips_followup_llm_calls_for_figure(self, monkeypatch):
+        parser = _make_parser()
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1"]})
+        called = {"purpose": 0, "methods": 0}
+
+        def _timeout(*args, **kwargs):  # noqa: ARG001
+            raise SubfigureDecompositionTimeoutError("timeout")
+
+        def _purpose(*args, **kwargs):  # noqa: ARG001
+            called["purpose"] += 1
+            return _FigurePurpose(purpose="x", title="x")
+
+        def _methods(*args, **kwargs):  # noqa: ARG001
+            called["methods"] += 1
+            return ["RNA-seq"]
+
+        monkeypatch.setattr(parser, "_decompose_subfigures", _timeout)
+        monkeypatch.setattr(parser, "_determine_purpose", _purpose)
+        monkeypatch.setattr(parser, "_identify_methods", _methods)
+
+        fig = parser.parse_figure(paper, "Figure 1")
+        assert "subfigure_decomposition_timeout" in fig.parse_warnings
+        assert "figure_llm_followups_skipped_after_timeout" in fig.parse_warnings
+        assert called["purpose"] == 0
+        assert called["methods"] == 0
 
 
 # ---------------------------------------------------------------------------

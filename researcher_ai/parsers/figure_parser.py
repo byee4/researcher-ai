@@ -786,6 +786,7 @@ class FigureParser:
         enriched_in_text.extend(line for line in bioc_results_lines if line not in enriched_in_text)
 
         parse_warnings: list[str] = []
+        timed_out = False
         try:
             subfigures = self._decompose_subfigures(figure_id, enriched_caption, enriched_in_text)
         except SubfigureDecompositionTimeoutError as exc:
@@ -797,6 +798,7 @@ class FigureParser:
             )
             parse_warnings.append("subfigure_decomposition_timeout")
             subfigures = []
+            timed_out = True
         if not subfigures and caption.strip():
             subfigures = _fallback_subfigures_from_caption(caption)
         layout = self._infer_layout(subfigures)
@@ -814,13 +816,33 @@ class FigureParser:
             )
             for sf in subfigures
         ]
-        purpose_meta = self._determine_purpose(figure_id, enriched_caption, enriched_in_text)
-        datasets = self._identify_datasets(enriched_caption, enriched_in_text)
-        methods = self._identify_methods(
-            enriched_caption,
-            enriched_in_text,
-            bioc_passages=bioc_fig_passages + bioc_results_passages,
-        )
+        # If panel decomposition timed out, skip additional non-essential LLM calls
+        # for this figure and return best-effort metadata immediately.
+        if timed_out:
+            purpose_meta = _FigurePurpose(
+                purpose=_fallback_purpose_from_caption(caption, in_text, figure_id),
+                title=figure_id,
+            )
+            datasets = sorted(
+                {
+                    m.group(1).upper()
+                    for m in _ACCESSION_RE.finditer(
+                        (enriched_caption + " " + " ".join(enriched_in_text)).strip()
+                    )
+                }
+            )
+            methods = self._identify_methods_regex(
+                (enriched_caption + " " + " ".join(enriched_in_text)).strip()
+            )
+            parse_warnings.append("figure_llm_followups_skipped_after_timeout")
+        else:
+            purpose_meta = self._determine_purpose(figure_id, enriched_caption, enriched_in_text)
+            datasets = self._identify_datasets(enriched_caption, enriched_in_text)
+            methods = self._identify_methods(
+                enriched_caption,
+                enriched_in_text,
+                bioc_passages=bioc_fig_passages + bioc_results_passages,
+            )
         resolved_title = _resolve_figure_title(figure_id, purpose_meta.title, caption)
 
         return Figure(
