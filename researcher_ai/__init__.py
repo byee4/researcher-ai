@@ -5,4 +5,4 @@ to produce an executable pipeline (Snakemake or Nextflow) and a Jupyter
 notebook for figure generation.
 """
 
-__version__ = "2.1.1"
+__version__ = "2.2.2"
