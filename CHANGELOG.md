@@ -2,6 +2,15 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-09 (v2.2.2)
+- Hardened figure parsing timeout behavior for production stability:
+  - adaptive orchestrator figure timeout floor by figure count (`RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS`)
+  - per-step figure LLM token budgets to reduce long-tail latency:
+    - `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS`
+    - `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS`
+    - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS`
+- Added regression tests and configuration/docs updates for timeout observability and controls.
+
 ## 2026-04-08 (v2.1.1)
 - Documented BioWorkflow rollout controls and strict-mode fallback behavior across README and docs.
 - Added explicit user-facing docs for:

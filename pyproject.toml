@@ -1,6 +1,6 @@
 [project]
 name = "researcher-ai"
-version = "2.1.1"
+version = "2.2.2"
 description = "Recreate a publication's analysis from raw data"
 readme = "README.md"
 requires-python = ">=3.10"
