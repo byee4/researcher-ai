@@ -366,6 +366,18 @@ class FigureParser:
         self.subfigure_timeout_seconds = float(
             os.environ.get("RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS", "0")
         )
+        self.subfigure_decompose_max_tokens = max(
+            256,
+            int(os.environ.get("RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS", "1200")),
+        )
+        self.figure_purpose_max_tokens = max(
+            128,
+            int(os.environ.get("RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS", "600")),
+        )
+        self.figure_methods_datasets_max_tokens = max(
+            128,
+            int(os.environ.get("RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS", "350")),
+        )
         self.figure_trace_path = os.environ.get("RESEARCHER_AI_FIGURE_TRACE_PATH", "").strip()
         self._figure_trace_events: list[dict[str, object]] = []
         self._active_paper_ref: str = ""
@@ -1121,6 +1133,7 @@ class FigureParser:
                         output_schema=_SubFigureList,
                         system=SYSTEM_FIGURE_PARSER,
                         model=self.llm_model,
+                        max_tokens=self.subfigure_decompose_max_tokens,
                         cache=self.cache,
                     )
             else:
@@ -1129,6 +1142,7 @@ class FigureParser:
                     output_schema=_SubFigureList,
                     system=SYSTEM_FIGURE_PARSER,
                     model=self.llm_model,
+                    max_tokens=self.subfigure_decompose_max_tokens,
                     cache=self.cache,
                 )
             self._record_trace_event(
@@ -1192,6 +1206,7 @@ class FigureParser:
                 output_schema=_FigurePurpose,
                 system=SYSTEM_FIGURE_PARSER,
                 model=self.llm_model,
+                max_tokens=self.figure_purpose_max_tokens,
                 cache=self.cache,
             )
             self._record_trace_event(
@@ -1276,6 +1291,7 @@ class FigureParser:
                 output_schema=_MethodsAndDatasets,
                 system=SYSTEM_FIGURE_PARSER,
                 model=self.llm_model,
+                max_tokens=self.figure_methods_datasets_max_tokens,
                 cache=self.cache,
             )
             llm_candidates = [
@@ -1343,6 +1359,7 @@ class FigureParser:
                 output_schema=_MethodsAndDatasets,
                 system=SYSTEM_FIGURE_PARSER,
                 model=self.llm_model,
+                max_tokens=self.figure_methods_datasets_max_tokens,
                 cache=self.cache,
             )
             methods = [m for m in result.methods if m and m.strip()]
