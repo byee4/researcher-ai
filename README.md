@@ -69,6 +69,16 @@ python scripts/estimate_figure_parse_latency.py \
   --trace-output /tmp/figure_latency_40456907_trace.json
 ```
 
+Investigate empty structured responses for Figure 2 (PMID 39303722):
+
+```bash
+python scripts/investigate_figure2_empty_responses.py \
+  --pmid 39303722 \
+  --figure-id "Figure 2" \
+  --baseline-runs 20 \
+  --variant-runs 10
+```
+
 ## Core Entry Points
 
 - CLI workflow runner: `scripts/run_workflow.py`
@@ -95,6 +105,10 @@ Most common settings:
 - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (default: `350`; sufficient for short methods/dataset extraction tasks)
 - `RESEARCHER_AI_FIGURE_TRACE_PATH` (default: unset; set only when collecting diagnostics)
 - Figure parse warnings now include `subfigure_decomposition_empty_response` when panel decomposition receives persistently empty structured output from the LLM and falls back to best-effort parsing.
+- `RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES` (default: `0`; emits per-attempt structured extraction telemetry for empty-response diagnostics)
+- `RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES_PATH` (default: unset; optional JSONL sink for telemetry events)
+- `RESEARCHER_AI_STRUCTURED_RESPONSE_FORMAT_MODE` (default: `auto`; options: `auto`, `json_schema_only`, `json_object_first`)
+- `RESEARCHER_AI_DISABLE_MODEL_FALLBACKS` (default: `0`; when `1`, disables cross-model failover and keeps only the primary model router)
 - `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default: `warn`)
   - `off`: skip BioWorkflow validation stage
   - `warn`: validate and continue (non-blocking)
