@@ -57,6 +57,16 @@ python scripts/run_workflow.py \
   --output /tmp/researcher_ai_pdf_run.json
 ```
 
+Estimate per-figure parsing latency (p50/p95):
+
+```bash
+python scripts/estimate_figure_parse_latency.py \
+  --source 40456907 \
+  --source-type pmid \
+  --max-figures 10 \
+  --output /tmp/figure_latency_40456907.json
+```
+
 ## Core Entry Points
 
 - CLI workflow runner: `scripts/run_workflow.py`
