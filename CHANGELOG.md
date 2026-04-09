@@ -6,6 +6,7 @@ This changelog was generated from archived markdown in `docs/previous/` on 2026-
 - feature: add Figure 2 (PMID 39303722) empty-response investigation tooling with env-gated structured extraction telemetry.
 - feature: add reproducibility harness `scripts/investigate_figure2_empty_responses.py` and generated experiment artifacts under `parse_results/`.
 - bugfix: allow investigation-mode fallback isolation via `RESEARCHER_AI_DISABLE_MODEL_FALLBACKS`.
+- bugfix: keep heuristic MethodsParser fallback descriptions/steps when per-assay LLM parsing fails (for example quota/rate-limit errors), instead of forcing all assays to `Could not be parsed.`.
 
 ## 2026-04-09 (v2.2.2)
 - Hardened figure parsing timeout behavior for production stability:

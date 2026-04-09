@@ -138,6 +138,9 @@ def _make_parser() -> MethodsParser:
     parser = MethodsParser.__new__(MethodsParser)
     parser.llm_model = "test-model"
     parser.cache = None
+    parser.assay_parse_concurrency = 1
+    parser.assay_parse_base_timeout_seconds = 90.0
+    parser.max_retrieval_refinement_rounds = 2
     return parser
 
 
@@ -984,7 +987,7 @@ class TestParse:
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_assay_failure_returns_stub_not_abort(self, mock_llm):
-        """LLM failure on a single assay produces a stub; parsing continues."""
+        """LLM failure on a single assay preserves heuristic assay fallback."""
         # Track _AssayMeta calls independently so the inserted classification
         # call (_AssayClassificationList) does not shift the counter.
         assay_meta_calls = [0]
@@ -999,10 +1002,12 @@ class TestParse:
         mock_llm.side_effect = side_effect
         parser = _make_parser()
         method = parser.parse(SAMPLE_PAPER)
-        # All 3 assays returned — the first one as a stub
+        # All 3 assays returned; the failed assay should still contain
+        # deterministic fallback structure instead of a hard stub marker.
         assert len(method.assays) == 3
         stub = method.assays[0]
-        assert stub.description == "Could not be parsed."
+        assert stub.description != "Could not be parsed."
+        assert len(stub.steps) >= 1
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_clean_parse_has_no_critical_warnings(self, mock_llm):
@@ -1036,6 +1041,21 @@ class TestParse:
         method = parser.parse(SAMPLE_PAPER)
         assert any("assay_stub" in w for w in method.parse_warnings)
         assert any("timeout" in w for w in method.parse_warnings)
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_all_assay_llm_failures_keep_majority_non_stub_descriptions(self, mock_llm):
+        """When all per-assay LLM calls fail, fallback assays still parse from text."""
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayMeta:
+                raise RuntimeError("quota")
+            return self._mock_llm(prompt, output_schema)
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+        method = parser.parse(SAMPLE_PAPER)
+        assert len(method.assays) >= 3
+        parsed = [a for a in method.assays if a.description != "Could not be parsed."]
+        assert len(parsed) >= (len(method.assays) // 2) + 1
 
     def test_parse_uses_bioc_methods_when_section_missing(self):
         parser = _make_parser()

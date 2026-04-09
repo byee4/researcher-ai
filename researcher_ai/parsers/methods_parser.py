@@ -488,7 +488,8 @@ class MethodsParser:
         code_refs: list[str],
         grounded_accessions: list[str],
     ) -> tuple[list[Assay], list[str]]:
-        if self.assay_parse_concurrency <= 1:
+        assay_parse_concurrency = max(1, int(getattr(self, "assay_parse_concurrency", 1)))
+        if assay_parse_concurrency <= 1:
             return self._parse_assays_sequential(
                 assay_names=assay_names,
                 category_map=category_map,
@@ -571,7 +572,8 @@ class MethodsParser:
         code_refs: list[str],
         grounded_accessions: list[str],
     ) -> tuple[list[Assay], list[str]]:
-        semaphore = asyncio.Semaphore(max(1, int(self.assay_parse_concurrency)))
+        assay_parse_concurrency = max(1, int(getattr(self, "assay_parse_concurrency", 1)))
+        semaphore = asyncio.Semaphore(assay_parse_concurrency)
 
         async def _worker(idx: int, assay_name: str):
             async with semaphore:
@@ -644,10 +646,7 @@ class MethodsParser:
                 paragraph=paragraph,
                 method_category=method_cat,
             )
-            return (
-                fallback.model_copy(update={"description": "Could not be parsed."}),
-                [msg],
-            )
+            return fallback, [msg]
 
     def _ensure_data_availability_text(
         self,
