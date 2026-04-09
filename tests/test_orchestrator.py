@@ -102,6 +102,24 @@ def test_parse_figures_timeout_degrades_cleanly(monkeypatch):
     assert any("parse_figures_timeout" in item for item in result["figure_parse_errors"])
 
 
+def test_parse_figures_timeout_auto_scales_with_figure_count(monkeypatch):
+    monkeypatch.setenv("RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setenv("RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS", "0.05")
+    orchestrator = WorkflowOrchestrator(max_build_attempts=1)
+
+    class _Paper:
+        figure_ids = ["Fig. 1", "Fig. 2", "Fig. 3"]
+
+    def _slow_parse(_paper):
+        time.sleep(0.08)
+        return []
+
+    monkeypatch.setattr(orchestrator.figure_parser, "parse_all_figures", _slow_parse)
+    result = orchestrator._node_parse_figures({"paper": _Paper()})
+    assert result["stage"] == "parsed_figures"
+    assert result["figures"] == []
+
+
 def test_orchestrator_continues_when_figure_parsing_fails(monkeypatch):
     monkeypatch.setattr(orch_mod, "_HAS_LANGGRAPH", False)
     orchestrator = WorkflowOrchestrator(max_build_attempts=1)

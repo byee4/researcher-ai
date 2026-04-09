@@ -139,6 +139,34 @@ class WorkflowOrchestrator:
         self.parse_figures_timeout_seconds = float(
             os.environ.get("RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS", "0")
         )
+        self.parse_figures_timeout_per_figure_seconds = float(
+            os.environ.get("RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS", "60")
+        )
+
+    def _effective_parse_figures_timeout_seconds(self, paper: Any) -> float:
+        configured = self.parse_figures_timeout_seconds
+        if configured <= 0:
+            return configured
+        figure_ids = getattr(paper, "figure_ids", None) or []
+        figure_count = len(
+            [
+                fid
+                for fid in figure_ids
+                if not re.match(r"(?i)^supplementary\s+figure\b", (fid or "").strip())
+            ]
+        )
+        if figure_count <= 0:
+            return configured
+        floor_timeout = self.parse_figures_timeout_per_figure_seconds * figure_count
+        if floor_timeout > configured:
+            logger.warning(
+                "parse_figures timeout raised from %.1fs to %.1fs based on %d figure(s).",
+                configured,
+                floor_timeout,
+                figure_count,
+            )
+            return floor_timeout
+        return configured
 
     def run(self, source: str, source_type: PaperSource) -> WorkflowState:
         initial: WorkflowState = {
@@ -227,7 +255,7 @@ class WorkflowOrchestrator:
                 "stage": "parsed_figures_skipped",
             }
 
-        timeout_s = self.parse_figures_timeout_seconds
+        timeout_s = self._effective_parse_figures_timeout_seconds(state["paper"])
         try:
             if timeout_s > 0:
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)

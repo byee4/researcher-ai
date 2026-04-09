@@ -86,9 +86,13 @@ Most common settings:
 - `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` (LLM request timeout)
 - `RESEARCHER_AI_LITELLM_VERBOSE` (`1/true` enables LiteLLM debug logging for diagnosis)
 - `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS` (optional hard timeout for orchestrator `parse_figures` node; degrades to empty figures on timeout)
+- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS` (per-figure floor used to auto-scale orchestrator figure timeout; default `60`)
 - `RESEARCHER_AI_SKIP_FIGURES` (`1/true` skips figure parsing for recovery runs)
 - `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS` (optional timeout override for per-figure subfigure decomposition calls)
 - `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS` (per-paper timeout budget before figure LLM circuit breaker opens; default `3`)
+- `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS` (max output tokens for panel decomposition; default `1200`)
+- `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS` (max output tokens for figure purpose/title extraction; default `600`)
+- `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (max output tokens for figure methods/dataset extraction; default `350`)
 - `RESEARCHER_AI_FIGURE_TRACE_PATH` (optional per-step figure telemetry JSON output path)
 - `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default `warn`)
   - `off`: skip BioWorkflow validation stage

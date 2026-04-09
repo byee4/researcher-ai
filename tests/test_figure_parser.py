@@ -126,6 +126,9 @@ def _make_parser() -> FigureParser:
     parser.cache = None
     parser.max_figure_llm_timeouts_per_paper = 3
     parser.subfigure_timeout_seconds = 0.0
+    parser.subfigure_decompose_max_tokens = 1200
+    parser.figure_purpose_max_tokens = 600
+    parser.figure_methods_datasets_max_tokens = 350
     parser.calibration_engine = FigureCalibrationEngine()
     parser.figure_trace_path = ""
     parser._figure_trace_events = []
@@ -728,6 +731,7 @@ class TestDecomposeSubfigures:
         assert len(sfs) == 2
         assert sfs[0].label == "a"
         assert sfs[1].plot_type == PlotType.VOLCANO
+        assert mock_structured.call_args.kwargs["max_tokens"] == parser.subfigure_decompose_max_tokens
 
     @patch("researcher_ai.parsers.figure_parser.ask_claude_structured")
     def test_empty_caption_returns_empty_list(self, mock_structured):
