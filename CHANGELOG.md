@@ -2,6 +2,11 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-09 (v2.2.3)
+- feature: add Figure 2 (PMID 39303722) empty-response investigation tooling with env-gated structured extraction telemetry.
+- feature: add reproducibility harness `scripts/investigate_figure2_empty_responses.py` and generated experiment artifacts under `parse_results/`.
+- bugfix: allow investigation-mode fallback isolation via `RESEARCHER_AI_DISABLE_MODEL_FALLBACKS`.
+
 ## 2026-04-09 (v2.2.2)
 - Hardened figure parsing timeout behavior for production stability:
   - adaptive orchestrator figure timeout floor by figure count (`RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS`)
