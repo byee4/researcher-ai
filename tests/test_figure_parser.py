@@ -120,7 +120,11 @@ SAMPLE_PAPER = Paper(
 def _make_parser() -> FigureParser:
     parser = FigureParser.__new__(FigureParser)
     parser.llm_model = "test-model"
+    parser.vision_model = "primary-vision"
     parser.cache = None
+    parser.max_figure_llm_timeouts_per_paper = 3
+    parser.subfigure_timeout_seconds = 0.0
+    parser.calibration_engine = FigureCalibrationEngine()
     return parser
 
 
@@ -1045,6 +1049,25 @@ class TestParseAllFigures:
         figs = parser.parse_all_figures(paper)
         assert len(figs) >= 1
         assert all("GSE77634" in f.datasets_used for f in figs)
+
+    @patch("researcher_ai.parsers.figure_parser.ask_claude_structured")
+    def test_circuit_breaker_skips_remaining_after_timeout_budget(self, mock_structured):
+        mock_structured.side_effect = lambda prompt, output_schema, **kw: self._mock_side_effect(output_schema)
+        parser = _make_parser()
+        parser.max_figure_llm_timeouts_per_paper = 1
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1", "Figure 2"]})
+
+        def _fake_parse_from_context(fig_id, caption, in_text, **kwargs):  # noqa: ARG001
+            stub = parser._stub_figure(fig_id, caption=caption, in_text=in_text)
+            if fig_id == "Figure 1":
+                return stub.model_copy(update={"parse_warnings": ["subfigure_decomposition_timeout"]})
+            return stub
+
+        parser._parse_figure_from_context = _fake_parse_from_context
+        figs = parser.parse_all_figures(paper)
+        assert len(figs) == 2
+        assert "subfigure_decomposition_timeout" in figs[0].parse_warnings
+        assert "figure_llm_circuit_breaker_open" in figs[1].parse_warnings
 
 
 # ---------------------------------------------------------------------------

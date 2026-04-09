@@ -72,6 +72,10 @@ Most common settings:
 - `OPENAI_API_KEY`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (provider keys)
 - `RESEARCHER_AI_MODEL` (default model router, default: `gpt-5.4`)
 - `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` (LLM request timeout)
+- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS` (optional hard timeout for orchestrator `parse_figures` node; degrades to empty figures on timeout)
+- `RESEARCHER_AI_SKIP_FIGURES` (`1/true` skips figure parsing for recovery runs)
+- `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS` (optional timeout override for per-figure subfigure decomposition calls)
+- `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS` (per-paper timeout budget before figure LLM circuit breaker opens; default `3`)
 - `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default `warn`)
   - `off`: skip BioWorkflow validation stage
   - `warn`: validate and continue (non-blocking)

@@ -7,6 +7,8 @@ Phase 4 architecture:
 
 from __future__ import annotations
 
+import concurrent.futures
+import logging
 import os
 import re
 from typing import Any, Optional, TypedDict
@@ -27,6 +29,8 @@ from researcher_ai.parsers.validation_agent import ValidationAgent
 from researcher_ai.parsers.software_parser import SoftwareParser
 from researcher_ai.pipeline.builder import PipelineBuilder
 from researcher_ai.pipeline.workflow_graph_mapper import build_workflow_graph
+
+logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional runtime dependency
     from langgraph.graph import END, StateGraph
@@ -58,6 +62,7 @@ class WorkflowState(TypedDict, total=False):
     method: Method
     datasets: list[Dataset]
     dataset_parse_errors: list[str]
+    figure_parse_errors: list[str]
     software: list[Software]
     workflow_graph: WorkflowGraph
     workflow_graph_validation_issues: list[GraphValidationIssue]
@@ -111,6 +116,13 @@ def _normalize_bioworkflow_mode(raw: Optional[str]) -> str:
     return mode
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class WorkflowOrchestrator:
     """Agentic/stateful orchestrator for parsing + pipeline generation."""
 
@@ -123,6 +135,10 @@ class WorkflowOrchestrator:
         self.pipeline_builder = PipelineBuilder()
         self.max_build_attempts = max_build_attempts
         self.bioworkflow_mode = _normalize_bioworkflow_mode(bioworkflow_mode)
+        self.skip_figures = _env_bool("RESEARCHER_AI_SKIP_FIGURES", default=False)
+        self.parse_figures_timeout_seconds = float(
+            os.environ.get("RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS", "0")
+        )
 
     def run(self, source: str, source_type: PaperSource) -> WorkflowState:
         initial: WorkflowState = {
@@ -202,7 +218,53 @@ class WorkflowOrchestrator:
 
     def _node_parse_figures(self, state: WorkflowState) -> WorkflowState:
         self._require_state_keys(state, ["paper"], node="parse_figures")
-        figures = self.figure_parser.parse_all_figures(state["paper"])
+        if self.skip_figures:
+            logger.warning("Skipping figure parsing because RESEARCHER_AI_SKIP_FIGURES is enabled.")
+            return {
+                "figures": [],
+                "figure_parse_errors": ["figure_parsing_skipped_by_flag"],
+                "progress": 35,
+                "stage": "parsed_figures_skipped",
+            }
+
+        timeout_s = self.parse_figures_timeout_seconds
+        try:
+            if timeout_s > 0:
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
+                    fut = executor.submit(self.figure_parser.parse_all_figures, state["paper"])
+                    try:
+                        figures = fut.result(timeout=timeout_s)
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(
+                            "parse_figures timed out after %.1fs; degrading to empty figures.",
+                            timeout_s,
+                        )
+                        fut.cancel()
+                        return {
+                            "figures": [],
+                            "figure_parse_errors": [
+                                f"parse_figures_timeout:{timeout_s:.1f}s"
+                            ],
+                            "progress": 35,
+                            "stage": "parsed_figures_timeout",
+                        }
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
+            else:
+                figures = self.figure_parser.parse_all_figures(state["paper"])
+        except Exception as exc:
+            logger.warning(
+                "parse_figures failed (%s): %s; degrading to empty figures.",
+                exc.__class__.__name__,
+                exc,
+            )
+            return {
+                "figures": [],
+                "figure_parse_errors": [f"parse_figures_error:{exc.__class__.__name__}:{exc}"],
+                "progress": 35,
+                "stage": "parsed_figures_degraded",
+            }
         return {"figures": figures, "progress": 35, "stage": "parsed_figures"}
 
     def _node_parse_methods(self, state: WorkflowState) -> WorkflowState:
