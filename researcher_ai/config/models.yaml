@@ -40,6 +40,9 @@ fallbacks:
 
 # ── Retry policy for rate-limit errors ───────────────────────────────────────
 retry:
+  # Retries delegated to provider SDK (OpenAI/LiteLLM layer). Keep low to
+  # avoid hidden timeout multiplication; module-level failover handles recovery.
+  provider_max_retries: 0
   rate_limit_max_retries: 2
   rate_limit_backoff_base_seconds: 0.6
   rate_limit_backoff_cap_seconds: 8.0

@@ -31,6 +31,7 @@ from researcher_ai.models.paper import Paper, PaperSource, PaperType, Section
 from researcher_ai.models.paper import BioCPassageContext
 from researcher_ai.parsers.figure_parser import (
     FigureParser,
+    SubfigureDecompositionTimeoutError,
     _SubFigureList,
     _SubFigureMeta,
     _AxisMeta,
@@ -120,7 +121,11 @@ SAMPLE_PAPER = Paper(
 def _make_parser() -> FigureParser:
     parser = FigureParser.__new__(FigureParser)
     parser.llm_model = "test-model"
+    parser.vision_model = "primary-vision"
     parser.cache = None
+    parser.max_figure_llm_timeouts_per_paper = 3
+    parser.subfigure_timeout_seconds = 0.0
+    parser.calibration_engine = FigureCalibrationEngine()
     return parser
 
 
@@ -875,6 +880,32 @@ class TestParseFigure:
         assert len(by_label["b"].layers) >= 2
         assert by_label["b"].layers[1].plot_type == PlotType.SWARM
 
+    def test_timeout_skips_followup_llm_calls_for_figure(self, monkeypatch):
+        parser = _make_parser()
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1"]})
+        called = {"purpose": 0, "methods": 0}
+
+        def _timeout(*args, **kwargs):  # noqa: ARG001
+            raise SubfigureDecompositionTimeoutError("timeout")
+
+        def _purpose(*args, **kwargs):  # noqa: ARG001
+            called["purpose"] += 1
+            return _FigurePurpose(purpose="x", title="x")
+
+        def _methods(*args, **kwargs):  # noqa: ARG001
+            called["methods"] += 1
+            return ["RNA-seq"]
+
+        monkeypatch.setattr(parser, "_decompose_subfigures", _timeout)
+        monkeypatch.setattr(parser, "_determine_purpose", _purpose)
+        monkeypatch.setattr(parser, "_identify_methods", _methods)
+
+        fig = parser.parse_figure(paper, "Figure 1")
+        assert "subfigure_decomposition_timeout" in fig.parse_warnings
+        assert "figure_llm_followups_skipped_after_timeout" in fig.parse_warnings
+        assert called["purpose"] == 0
+        assert called["methods"] == 0
+
 
 # ---------------------------------------------------------------------------
 # TestParseAllFigures (integration-level with mocked LLM)
@@ -1045,6 +1076,25 @@ class TestParseAllFigures:
         figs = parser.parse_all_figures(paper)
         assert len(figs) >= 1
         assert all("GSE77634" in f.datasets_used for f in figs)
+
+    @patch("researcher_ai.parsers.figure_parser.ask_claude_structured")
+    def test_circuit_breaker_skips_remaining_after_timeout_budget(self, mock_structured):
+        mock_structured.side_effect = lambda prompt, output_schema, **kw: self._mock_side_effect(output_schema)
+        parser = _make_parser()
+        parser.max_figure_llm_timeouts_per_paper = 1
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1", "Figure 2"]})
+
+        def _fake_parse_from_context(fig_id, caption, in_text, **kwargs):  # noqa: ARG001
+            stub = parser._stub_figure(fig_id, caption=caption, in_text=in_text)
+            if fig_id == "Figure 1":
+                return stub.model_copy(update={"parse_warnings": ["subfigure_decomposition_timeout"]})
+            return stub
+
+        parser._parse_figure_from_context = _fake_parse_from_context
+        figs = parser.parse_all_figures(paper)
+        assert len(figs) == 2
+        assert "subfigure_decomposition_timeout" in figs[0].parse_warnings
+        assert "figure_llm_circuit_breaker_open" in figs[1].parse_warnings
 
 
 # ---------------------------------------------------------------------------

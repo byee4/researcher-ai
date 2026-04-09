@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -52,6 +53,10 @@ logger = logging.getLogger(__name__)
 
 # Deprecated compatibility alias for legacy tests/mocks.
 ask_claude_structured = extract_structured_data
+
+
+class SubfigureDecompositionTimeoutError(TimeoutError):
+    """Raised when panel decomposition times out and should trip circuit breakers."""
 
 
 def _extract_structured_data(*args, **kwargs):
@@ -353,6 +358,13 @@ class FigureParser:
         self.calibration_engine = (
             calibration_engine if calibration_engine is not None else FigureCalibrationEngine()
         )
+        self.max_figure_llm_timeouts_per_paper = max(
+            0,
+            int(os.environ.get("RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS", "3")),
+        )
+        self.subfigure_timeout_seconds = float(
+            os.environ.get("RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS", "0")
+        )
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -392,7 +404,31 @@ class FigureParser:
             paper_level_datasets = self._extract_dataset_ids_from_paper(paper)
             paper_level_methods = self._extract_methods_from_paper(paper)
 
+        timeout_count = 0
         for fig_id in figure_ids:
+            if (
+                self.max_figure_llm_timeouts_per_paper > 0
+                and timeout_count >= self.max_figure_llm_timeouts_per_paper
+            ):
+                logger.warning(
+                    "Figure parsing circuit breaker open after %d timeout(s); "
+                    "skipping LLM parsing for %s and remaining figures.",
+                    timeout_count,
+                    fig_id,
+                )
+                stub = self._stub_figure(
+                    fig_id,
+                    caption="",
+                    in_text=[],
+                    parse_warnings=["figure_llm_circuit_breaker_open"],
+                )
+                stub = stub.model_copy(update={
+                    "datasets_used": paper_level_datasets,
+                    "methods_used": paper_level_methods,
+                    "preview_url": preview_map.get(fig_id),
+                })
+                figures.append(stub)
+                continue
             logger.info("Parsing %s", fig_id)
             parse_warnings: list[str] = []
             if paper.source == PaperSource.PDF:
@@ -423,6 +459,8 @@ class FigureParser:
                     ),
                 })
                 figures.append(multimodal_figure)
+                if self._warnings_contain_timeout(multimodal_figure.parse_warnings):
+                    timeout_count += 1
                 continue
             if paper.source == PaperSource.PDF:
                 stub = self._stub_figure(
@@ -462,8 +500,15 @@ class FigureParser:
                     "preview_url": preview_map.get(fig_id),
                 })
                 figures.append(figure)
+                if self._warnings_contain_timeout(figure.parse_warnings):
+                    timeout_count += 1
             except Exception as exc:
-                logger.warning("Failed to parse %s: %s", fig_id, exc)
+                logger.warning(
+                    "Failed to parse %s (%s): %s",
+                    fig_id,
+                    exc.__class__.__name__,
+                    exc,
+                )
                 stub = self._stub_figure(fig_id, caption=caption, in_text=in_text)
                 stub = stub.model_copy(update={
                     "datasets_used": paper_level_datasets,
@@ -472,6 +517,10 @@ class FigureParser:
                 })
                 figures.append(stub)
         return figures
+
+    @staticmethod
+    def _warnings_contain_timeout(warnings: list[str]) -> bool:
+        return any("timeout" in (w or "").lower() for w in warnings)
 
     def _recover_figure_ids(self, paper: Paper) -> list[str]:
         """Recover figure IDs from section and raw text when Paper.figure_ids is empty."""
@@ -643,9 +692,16 @@ class FigureParser:
                 image_bytes=panel_images,
             )
         except Exception as exc:
-            logger.warning("Multimodal PDF figure extraction failed for %s: %s", figure_id, exc)
+            logger.warning(
+                "Multimodal PDF figure extraction failed for %s (%s): %s",
+                figure_id,
+                exc.__class__.__name__,
+                exc,
+            )
             if isinstance(exc, ValueError) and "Image at index" in str(exc) and "exceeds max size" in str(exc):
                 parse_warnings.append("multimodal_pdf_unavailable:image_size_limit_exceeded")
+            if "timeout" in f"{exc.__class__.__name__}:{exc}".lower():
+                parse_warnings.append("multimodal_pdf_unavailable:vision_timeout")
             parse_warnings.append(
                 f"multimodal_pdf_unavailable:vision_extraction_failed:{exc.__class__.__name__}"
             )
@@ -729,7 +785,20 @@ class FigureParser:
         enriched_in_text = list(in_text)
         enriched_in_text.extend(line for line in bioc_results_lines if line not in enriched_in_text)
 
-        subfigures = self._decompose_subfigures(figure_id, enriched_caption, enriched_in_text)
+        parse_warnings: list[str] = []
+        timed_out = False
+        try:
+            subfigures = self._decompose_subfigures(figure_id, enriched_caption, enriched_in_text)
+        except SubfigureDecompositionTimeoutError as exc:
+            logger.warning(
+                "Subfigure decomposition timed out for %s (%s): %s",
+                figure_id,
+                exc.__class__.__name__,
+                exc,
+            )
+            parse_warnings.append("subfigure_decomposition_timeout")
+            subfigures = []
+            timed_out = True
         if not subfigures and caption.strip():
             subfigures = _fallback_subfigures_from_caption(caption)
         layout = self._infer_layout(subfigures)
@@ -747,13 +816,33 @@ class FigureParser:
             )
             for sf in subfigures
         ]
-        purpose_meta = self._determine_purpose(figure_id, enriched_caption, enriched_in_text)
-        datasets = self._identify_datasets(enriched_caption, enriched_in_text)
-        methods = self._identify_methods(
-            enriched_caption,
-            enriched_in_text,
-            bioc_passages=bioc_fig_passages + bioc_results_passages,
-        )
+        # If panel decomposition timed out, skip additional non-essential LLM calls
+        # for this figure and return best-effort metadata immediately.
+        if timed_out:
+            purpose_meta = _FigurePurpose(
+                purpose=_fallback_purpose_from_caption(caption, in_text, figure_id),
+                title=figure_id,
+            )
+            datasets = sorted(
+                {
+                    m.group(1).upper()
+                    for m in _ACCESSION_RE.finditer(
+                        (enriched_caption + " " + " ".join(enriched_in_text)).strip()
+                    )
+                }
+            )
+            methods = self._identify_methods_regex(
+                (enriched_caption + " " + " ".join(enriched_in_text)).strip()
+            )
+            parse_warnings.append("figure_llm_followups_skipped_after_timeout")
+        else:
+            purpose_meta = self._determine_purpose(figure_id, enriched_caption, enriched_in_text)
+            datasets = self._identify_datasets(enriched_caption, enriched_in_text)
+            methods = self._identify_methods(
+                enriched_caption,
+                enriched_in_text,
+                bioc_passages=bioc_fig_passages + bioc_results_passages,
+            )
         resolved_title = _resolve_figure_title(figure_id, purpose_meta.title, caption)
 
         return Figure(
@@ -766,6 +855,7 @@ class FigureParser:
             in_text_context=in_text,
             datasets_used=datasets,
             methods_used=methods,
+            parse_warnings=parse_warnings,
         )
 
     def _get_bioc_context_for_figure(
@@ -906,16 +996,34 @@ class FigureParser:
             "entry with label='main'."
         )
         try:
-            result = _extract_structured_data(
-                prompt=prompt,
-                output_schema=_SubFigureList,
-                system=SYSTEM_FIGURE_PARSER,
-                model=self.llm_model,
-                cache=self.cache,
-            )
+            if self.subfigure_timeout_seconds > 0:
+                with llm_utils.temporary_request_timeout(self.subfigure_timeout_seconds):
+                    result = _extract_structured_data(
+                        prompt=prompt,
+                        output_schema=_SubFigureList,
+                        system=SYSTEM_FIGURE_PARSER,
+                        model=self.llm_model,
+                        cache=self.cache,
+                    )
+            else:
+                result = _extract_structured_data(
+                    prompt=prompt,
+                    output_schema=_SubFigureList,
+                    system=SYSTEM_FIGURE_PARSER,
+                    model=self.llm_model,
+                    cache=self.cache,
+                )
             return [_subfigure_from_meta(m) for m in result.subfigures]
         except Exception as exc:
-            logger.warning("Subfigure decomposition failed for %s: %s", figure_id, exc)
+            detail = f"{exc.__class__.__name__}: {exc}"
+            if "timeout" in detail.lower():
+                raise SubfigureDecompositionTimeoutError(detail) from exc
+            logger.warning(
+                "Subfigure decomposition failed for %s (%s): %s",
+                figure_id,
+                exc.__class__.__name__,
+                exc,
+            )
             return []
 
     def _determine_purpose(
@@ -940,7 +1048,12 @@ class FigureParser:
                 cache=self.cache,
             )
         except Exception as exc:
-            logger.warning("Purpose extraction failed for %s: %s", figure_id, exc)
+            logger.warning(
+                "Purpose extraction failed for %s (%s): %s",
+                figure_id,
+                exc.__class__.__name__,
+                exc,
+            )
             return _FigurePurpose(
                 purpose=_fallback_purpose_from_caption(caption, in_text, figure_id),
                 title=figure_id,
@@ -997,7 +1110,11 @@ class FigureParser:
             llm_grounded = [d for d in llm_candidates if d in grounded]
             return sorted(set(accessions) | set(llm_grounded))
         except Exception as exc:
-            logger.warning("Dataset extraction (LLM) failed: %s", exc)
+            logger.warning(
+                "Dataset extraction (LLM) failed (%s): %s",
+                exc.__class__.__name__,
+                exc,
+            )
             return accessions
 
     def _identify_methods(
@@ -1036,7 +1153,11 @@ class FigureParser:
                 return methods
             return self._identify_methods_regex(combined)
         except Exception as exc:
-            logger.warning("Method extraction failed: %s", exc)
+            logger.warning(
+                "Method extraction failed (%s): %s",
+                exc.__class__.__name__,
+                exc,
+            )
             return self._identify_methods_regex(combined)
 
     def _extract_dataset_ids_from_paper(self, paper: Paper) -> list[str]:

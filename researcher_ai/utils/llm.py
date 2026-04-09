@@ -142,6 +142,23 @@ def _retry_cfg() -> dict[str, Any]:
     return _MODEL_CONFIG.get("retry", {})
 
 
+def _provider_request_max_retries() -> int:
+    """Max retries delegated to provider SDK/LiteLLM call layer.
+
+    Keep this at 0 by default so a single LLM timeout does not silently balloon
+    to ~3x wall time due to hidden SDK retries. Explicit retry behavior should
+    remain in this module where we can reason about it deterministically.
+    """
+    raw = os.environ.get(
+        "RESEARCHER_AI_PROVIDER_MAX_RETRIES",
+        str(_retry_cfg().get("provider_max_retries", 0)),
+    )
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 0
+
+
 def _fallback_chain_for_model_router(model_router: str) -> list[str]:
     """Return ordered model-router chain: primary model followed by failovers."""
     chain = [str(model_router)]
@@ -367,6 +384,9 @@ def _is_transient_provider_error(exc: Exception) -> bool:
         or "serviceunavailable" in cls
         or "internalservererror" in cls
         or "apistatuserror" in cls
+        or "timeout" in cls
+        or "timed out" in msg
+        or "request timed out" in msg
         or "bad gateway" in msg
         or "gateway timeout" in msg
         or "service unavailable" in msg
@@ -537,6 +557,7 @@ def _litellm_completion(**kwargs: Any) -> Any:
             "litellm is required for LLM operations. "
             "Install with: pip install litellm"
         ) from exc
+    kwargs.setdefault("max_retries", _provider_request_max_retries())
     return completion(**kwargs)
 
 

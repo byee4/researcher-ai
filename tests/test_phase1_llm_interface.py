@@ -428,6 +428,7 @@ def test_extract_structured_data_propagates_timeout_error(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setattr("researcher_ai.utils.llm._MODEL_CONFIG", {"fallbacks": {}})
 
     with pytest.raises(TimeoutError, match="timed out"):
         extract_structured_data("gpt-5.4", "prompt", _Out)
@@ -497,6 +498,46 @@ def test_transient_classifier_supports_litellm_unified_exception(monkeypatch):
         types.SimpleNamespace(APIConnectionError=APIConnectionError),
     )
     assert _is_transient_provider_error(APIConnectionError("network down")) is True
+
+
+def test_transient_classifier_treats_timeout_errors_as_transient():
+    class TimeoutErrorLike(Exception):
+        pass
+
+    assert _is_transient_provider_error(TimeoutErrorLike("request timed out")) is True
+
+
+def test_extract_structured_data_sets_provider_max_retries_default_zero(monkeypatch):
+    captured: list[int] = []
+
+    def _completion(**kwargs):
+        captured.append(int(kwargs.get("max_retries", -1)))
+        return _DummyResponse(json.dumps({"value": "ok"}))
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.delenv("RESEARCHER_AI_PROVIDER_MAX_RETRIES", raising=False)
+    monkeypatch.setattr("researcher_ai.utils.llm._MODEL_CONFIG", {"retry": {"provider_max_retries": 0}})
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "ok"
+    assert captured and captured[0] == 0
+
+
+def test_extract_structured_data_respects_provider_max_retries_env(monkeypatch):
+    captured: list[int] = []
+
+    def _completion(**kwargs):
+        captured.append(int(kwargs.get("max_retries", -1)))
+        return _DummyResponse(json.dumps({"value": "ok"}))
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("RESEARCHER_AI_PROVIDER_MAX_RETRIES", "1")
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "ok"
+    assert captured and captured[0] == 1
 
 
 def test_generate_text_falls_back_on_rate_limit(monkeypatch):
