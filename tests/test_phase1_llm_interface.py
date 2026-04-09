@@ -540,6 +540,23 @@ def test_extract_structured_data_respects_provider_max_retries_env(monkeypatch):
     assert captured and captured[0] == 1
 
 
+def test_generate_text_enables_litellm_verbose_when_env_set(monkeypatch):
+    calls: list[str] = []
+    fake_litellm = types.SimpleNamespace(
+        completion=lambda **kwargs: (calls.append(kwargs["model"]) or _DummyResponse("ok")),
+        set_verbose=False,
+    )
+    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("RESEARCHER_AI_LITELLM_VERBOSE", "1")
+    monkeypatch.setattr("researcher_ai.utils.llm._LITELLM_VERBOSE_CONFIGURED", False)
+
+    out = generate_text("gpt-5.4", "hello")
+    assert out == "ok"
+    assert fake_litellm.set_verbose is True
+    assert calls and calls[0] == "openai/gpt-5.4"
+
+
 def test_generate_text_falls_back_on_rate_limit(monkeypatch):
     """Rate-limited primary model should fall back to configured secondary."""
     calls: list[str] = []

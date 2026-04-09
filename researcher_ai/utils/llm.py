@@ -31,6 +31,7 @@ from typing import Any, Callable, Literal, Optional, TypeVar
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+_LITELLM_VERBOSE_CONFIGURED = False
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -157,6 +158,34 @@ def _provider_request_max_retries() -> int:
         return max(0, int(raw))
     except Exception:
         return 0
+
+
+def _litellm_verbose_enabled() -> bool:
+    raw = os.environ.get("RESEARCHER_AI_LITELLM_VERBOSE", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configure_litellm_debug_if_enabled(litellm_module: Any) -> None:
+    global _LITELLM_VERBOSE_CONFIGURED
+    if _LITELLM_VERBOSE_CONFIGURED:
+        return
+    if not _litellm_verbose_enabled():
+        _LITELLM_VERBOSE_CONFIGURED = True
+        return
+    try:
+        # LiteLLM supports a global verbosity switch.
+        setattr(litellm_module, "set_verbose", True)
+    except Exception:
+        pass
+    try:
+        # Compatibility: some versions expose explicit debug helper.
+        turn_on_debug = getattr(litellm_module, "_turn_on_debug", None)
+        if callable(turn_on_debug):
+            turn_on_debug()
+    except Exception:
+        pass
+    logger.info("LiteLLM verbose logging enabled via RESEARCHER_AI_LITELLM_VERBOSE")
+    _LITELLM_VERBOSE_CONFIGURED = True
 
 
 def _fallback_chain_for_model_router(model_router: str) -> list[str]:
@@ -551,12 +580,14 @@ def _validate_image_sizes(image_bytes: list[bytes], max_bytes: int = _MAX_IMAGE_
 
 def _litellm_completion(**kwargs: Any) -> Any:
     try:
-        from litellm import completion  # type: ignore[import]
+        import litellm  # type: ignore[import]
+        completion = litellm.completion
     except ImportError as exc:
         raise ImportError(
             "litellm is required for LLM operations. "
             "Install with: pip install litellm"
         ) from exc
+    _configure_litellm_debug_if_enabled(litellm)
     kwargs.setdefault("max_retries", _provider_request_max_retries())
     return completion(**kwargs)
 
