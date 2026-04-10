@@ -84,3 +84,30 @@ export RESEARCHER_AI_BIOC_ENABLED="1"
 export RESEARCHER_AI_FIGURE_CALIBRATION="on"
 export RESEARCHER_AI_HPC_PROFILE="tscc"
 ```
+
+## PMID 39303722 benchmark profile (2026-04-10)
+
+Use this profile when running PMID `39303722` with OpenAI-only credentials:
+
+```bash
+export RESEARCHER_AI_MODEL="gpt-5.4"
+export RESEARCHER_AI_DISABLE_MODEL_FALLBACKS="1"
+export RESEARCHER_AI_LLM_TIMEOUT_SECONDS="180"
+export RESEARCHER_AI_PROVIDER_MAX_RETRIES="0"
+export RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS="1800"
+export RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS="180"
+export RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS="180"
+export RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS="6"
+export RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS="2"
+export RESEARCHER_AI_BIOWORKFLOW_MODE="warn"
+```
+
+Observed benchmark outcome (`one_more_recommended_net`):
+- runtime: `535.42s`
+- sections parsed: `8`
+- figures parsed: `7`
+- assays in assay graph: `22`
+- assay stub parse warnings: `22`
+- leading warning class: OpenAI `RateLimitError` (quota exceeded)
+
+Interpretation: this profile prevents premature timeout/fallback degradation, but it cannot override upstream provider quota exhaustion. If warnings show quota exceeded, increase/restore provider quota before rerunning.

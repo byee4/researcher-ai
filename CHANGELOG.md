@@ -2,6 +2,9 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-10
+- feature: document PMID 39303722 benchmark-backed OpenAI-only export profile and include quota/rate-limit interpretation guidance in README/config docs.
+
 ## 2026-04-09 (v2.2.3)
 - feature: add Figure 2 (PMID 39303722) empty-response investigation tooling with env-gated structured extraction telemetry.
 - feature: add reproducibility harness `scripts/investigate_figure2_empty_responses.py` and generated experiment artifacts under `parse_results/`.

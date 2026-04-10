@@ -122,6 +122,32 @@ Most common settings:
 Model/provider routing defaults are defined in:
 `researcher_ai/config/models.yaml`
 
+Benchmark-backed profile for PMID `39303722` (single-provider OpenAI runs):
+
+```bash
+export RESEARCHER_AI_MODEL="gpt-5.4"
+export RESEARCHER_AI_DISABLE_MODEL_FALLBACKS="1"
+export RESEARCHER_AI_LLM_TIMEOUT_SECONDS="180"
+export RESEARCHER_AI_PROVIDER_MAX_RETRIES="0"
+export RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS="1800"
+export RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS="180"
+export RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS="180"
+export RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS="6"
+export RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS="2"
+export RESEARCHER_AI_BIOWORKFLOW_MODE="warn"
+```
+
+Latest benchmark snapshot (`2026-04-10`, PMID `39303722`):
+- runtime: `535.42s` (`one_more_recommended_net`)
+- parsed paper sections: `8`
+- parsed figures: `7`
+- assays discovered in assay graph: `22`
+- assay stub parse warnings: `22` (all assay stubs failed in this run)
+- dominant failure mode: OpenAI quota/rate-limit (`RateLimitError: ... exceeded your current quota`)
+
+Important: timeout increases cannot recover assay parsing when provider quota is exhausted.
+If your run shows quota/rate-limit failures, restore quota/billing first; then re-run with the profile above.
+
 ## BioWorkflow Strict-Mode Fallback
 
 When `RESEARCHER_AI_BIOWORKFLOW_MODE=on`, validation can block unsafe pipeline
