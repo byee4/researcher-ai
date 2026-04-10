@@ -4,6 +4,7 @@ This changelog was generated from archived markdown in `docs/previous/` on 2026-
 
 ## 2026-04-10
 - feature: document PMID 39303722 benchmark-backed OpenAI-only export profile and include quota/rate-limit interpretation guidance in README/config docs.
+- bugfix: stop per-assay LLM call cascades after first quota/rate-limit failure by opening an assay-parse circuit breaker and using text fallback for remaining assays.
 
 ## 2026-04-09 (v2.2.3)
 - feature: add Figure 2 (PMID 39303722) empty-response investigation tooling with env-gated structured extraction telemetry.

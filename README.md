@@ -110,6 +110,7 @@ Most common settings:
 - `RESEARCHER_AI_STRUCTURED_RESPONSE_FORMAT_MODE` (default: `auto`; options: `auto`, `json_schema_only`, `json_object_first`)
 - `RESEARCHER_AI_DISABLE_MODEL_FALLBACKS` (default: `0`; when `1`, disables cross-model failover and keeps only the primary model router)
 - Methods parser degradation path: per-assay failures still emit `assay_stub` warnings, but now preserve heuristic fallback assay descriptions/steps when source text is available (instead of collapsing all failed assays to `Could not be parsed.`).
+- Methods parser quota/rate-limit protection: after the first per-assay quota/rate-limit failure, remaining assays use text fallback without additional assay-level LLM calls (`assay_parse_circuit_opened` warning), reducing wasted retries/quota burn.
 - `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default: `warn`)
   - `off`: skip BioWorkflow validation stage
   - `warn`: validate and continue (non-blocking)

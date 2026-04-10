@@ -1057,6 +1057,27 @@ class TestParse:
         parsed = [a for a in method.assays if a.description != "Could not be parsed."]
         assert len(parsed) >= (len(method.assays) // 2) + 1
 
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_rate_limit_opens_assay_circuit_and_skips_remaining_assay_llm_calls(self, mock_llm):
+        """After first quota/rate-limit assay failure, remaining assays use local fallback."""
+        assay_meta_calls = [0]
+
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayMeta:
+                assay_meta_calls[0] += 1
+                raise RuntimeError("RateLimitError: exceeded your current quota")
+            return self._mock_llm(prompt, output_schema)
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+        method = parser.parse(SAMPLE_PAPER)
+
+        assert len(method.assays) >= 3
+        assert assay_meta_calls[0] == 1
+        assert any("assay_parse_circuit_opened" in w for w in method.parse_warnings)
+        parsed = [a for a in method.assays if a.description != "Could not be parsed."]
+        assert len(parsed) >= (len(method.assays) // 2) + 1
+
     def test_parse_uses_bioc_methods_when_section_missing(self):
         parser = _make_parser()
         paper = SAMPLE_PAPER.model_copy(

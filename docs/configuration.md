@@ -45,6 +45,10 @@ Use this file to:
   - `on`: strict; if ungrounded fields remain, return `needs_human_review`
 - `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS`: hard cap for iterative retrieval rounds per stage (recommended default `2`)
 
+Methods parser safeguard behavior:
+- On quota/rate-limit assay parse failures, the parser opens an internal assay circuit breaker for that paper and parses remaining assays from local text fallback instead of continuing assay-level LLM calls.
+- This behavior is surfaced via `assay_parse_circuit_opened` and `assay_fallback_no_llm_after_circuit` warnings in `Method.parse_warnings`.
+
 ## BioC / PubMed
 
 - `RESEARCHER_AI_BIOC_ENABLED`: enable/disable BioC enrichment (recommended default `1`)

@@ -544,7 +544,7 @@ class MethodsParser:
     ) -> tuple[list[Assay], list[str]]:
         assays: list[Assay] = []
         warnings: list[str] = []
-        for name in assay_names:
+        for idx, name in enumerate(assay_names):
             assay, assay_warnings = self._parse_single_assay(
                 assay_name=name,
                 assay_names=assay_names,
@@ -558,6 +558,29 @@ class MethodsParser:
             )
             assays.append(assay)
             warnings.extend(assay_warnings)
+            if _warnings_indicate_rate_limit_or_quota(assay_warnings):
+                remaining = assay_names[idx + 1 :]
+                if remaining:
+                    warnings.append(
+                        "assay_parse_circuit_opened: reason=rate_limit_or_quota; "
+                        f"remaining_assays={len(remaining)} parsed via text fallback without LLM"
+                    )
+                for remaining_name in remaining:
+                    method_cat = category_map.get(remaining_name, MethodCategory.computational)
+                    fallback_assay = self._build_fallback_assay(
+                        assay_name=remaining_name,
+                        assay_names=assay_names,
+                        methods_text=methods_text,
+                        method_category=method_cat,
+                        code_refs=code_refs,
+                        grounded_accessions=grounded_accessions,
+                    )
+                    assays.append(fallback_assay)
+                    warnings.append(
+                        "assay_fallback_no_llm_after_circuit: "
+                        f"{remaining_name!r} parsed via text fallback"
+                    )
+                break
         return assays, warnings
 
     async def _parse_assays_async(
@@ -636,17 +659,39 @@ class MethodsParser:
         except Exception as exc:
             msg = f"assay_stub: {assay_name!r} could not be parsed ({type(exc).__name__}: {exc})"
             logger.warning(msg)
-            paragraph = _extract_assay_paragraph(
-                methods_text,
-                assay_name,
-                assay_names=assay_names,
-            )
-            fallback = _fallback_assay_from_text(
+            fallback = self._build_fallback_assay(
                 assay_name=assay_name,
-                paragraph=paragraph,
+                assay_names=assay_names,
+                methods_text=methods_text,
                 method_category=method_cat,
+                code_refs=code_refs,
+                grounded_accessions=grounded_accessions,
             )
             return fallback, [msg]
+
+    def _build_fallback_assay(
+        self,
+        *,
+        assay_name: str,
+        assay_names: list[str],
+        methods_text: str,
+        method_category: MethodCategory,
+        code_refs: list[str],
+        grounded_accessions: list[str],
+    ) -> Assay:
+        paragraph = _extract_assay_paragraph(
+            methods_text,
+            assay_name,
+            assay_names=assay_names,
+        )
+        fallback = _fallback_assay_from_text(
+            assay_name=assay_name,
+            paragraph=paragraph,
+            method_category=method_category,
+        )
+        fallback = self._apply_code_references(fallback, code_refs)
+        fallback = self._sanitize_assay_data_source(fallback, grounded_accessions)
+        return fallback
 
     def _ensure_data_availability_text(
         self,
@@ -1530,6 +1575,24 @@ def _normalize_assay_name(
         return candidates[0]
     # Ambiguous or no match
     return None
+
+
+def _is_rate_limit_or_quota_error_text(text: str) -> bool:
+    message = (text or "").lower()
+    indicators = (
+        "ratelimiterror",
+        "rate limit",
+        "too many requests",
+        "429",
+        "quota",
+        "insufficient_quota",
+        "exceeded your current quota",
+    )
+    return any(token in message for token in indicators)
+
+
+def _warnings_indicate_rate_limit_or_quota(warnings: list[str]) -> bool:
+    return any(_is_rate_limit_or_quota_error_text(str(w)) for w in warnings)
 
 
 def _extract_section_by_heading(text: str, heading_re: re.Pattern) -> str:
