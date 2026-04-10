@@ -479,6 +479,55 @@ def _is_empty_structured_response_error(exc: Exception) -> bool:
     return "empty structured response from model" in msg
 
 
+def _is_openai_strict_json_schema_compatible(schema: dict[str, Any]) -> bool:
+    """Return True when schema meets OpenAI strict json_schema requirements.
+
+    OpenAI's strict json_schema mode requires, for every object node:
+    - ``additionalProperties`` must be ``false``
+    - ``required`` must contain every property key
+    """
+
+    def _walk(node: Any) -> bool:
+        if isinstance(node, list):
+            return all(_walk(item) for item in node)
+        if not isinstance(node, dict):
+            return True
+
+        node_type = node.get("type")
+        if node_type == "object" or "properties" in node:
+            props = node.get("properties")
+            if not isinstance(props, dict):
+                return False
+            if node.get("additionalProperties") is not False:
+                return False
+            required = node.get("required")
+            if not isinstance(required, list):
+                return False
+            if set(str(k) for k in props.keys()) != set(str(k) for k in required):
+                return False
+            if not all(_walk(v) for v in props.values()):
+                return False
+
+        for key in ("$defs", "definitions"):
+            defs = node.get(key)
+            if isinstance(defs, dict):
+                if not all(_walk(v) for v in defs.values()):
+                    return False
+
+        for key in ("anyOf", "allOf", "oneOf"):
+            if key in node and not _walk(node.get(key)):
+                return False
+
+        if "items" in node and not _walk(node.get("items")):
+            return False
+        if "prefixItems" in node and not _walk(node.get("prefixItems")):
+            return False
+
+        return True
+
+    return _walk(schema)
+
+
 def _rate_limit_retry_limit() -> int:
     raw = _retry_cfg().get("rate_limit_max_retries", 2)
     try:
@@ -892,6 +941,17 @@ def extract_structured_data(
 
     for idx, candidate_router in enumerate(model_chain):
         llm_model = _normalize_model_router_for_litellm(candidate_router)
+        candidate_strategy = response_strategy
+        if (
+            candidate_strategy != "json_object_first"
+            and _infer_provider_from_model_router(llm_model) == "openai"
+            and not _is_openai_strict_json_schema_compatible(strict_schema)
+        ):
+            candidate_strategy = "json_object_first"
+            logger.debug(
+                "OpenAI strict json_schema preflight failed for %s; using json_object-first strategy.",
+                llm_model,
+            )
         normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
         normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
         _emit_empty_debug_event(
@@ -900,7 +960,7 @@ def extract_structured_data(
                 "prompt_hash": prompt_hash,
                 "candidate_index": idx,
                 "candidate_model": llm_model,
-                "strategy": response_strategy,
+                "strategy": candidate_strategy,
                 "normalized_max_tokens": int(normalized_max_tokens),
             }
         )
@@ -928,7 +988,7 @@ def extract_structured_data(
             for attempt in range(retry_limit + 1):
                 try:
                     try:
-                        if response_strategy == "json_object_first":
+                        if candidate_strategy == "json_object_first":
                             _emit_empty_debug_event(
                                 {
                                     "event": "api_call",
@@ -973,7 +1033,7 @@ def extract_structured_data(
                                 "rate_limit_attempt": attempt,
                                 "mode": (
                                     "json_object"
-                                    if response_strategy == "json_object_first"
+                                    if candidate_strategy == "json_object_first"
                                     else "json_schema"
                                 ),
                                 "error_class": exc.__class__.__name__,
@@ -981,7 +1041,7 @@ def extract_structured_data(
                             }
                         )
                         if "response_format" in msg or "schema" in msg or "unsupported" in msg:
-                            if response_strategy == "json_schema_only":
+                            if candidate_strategy == "json_schema_only":
                                 raise
                             try:
                                 _emit_empty_debug_event(
