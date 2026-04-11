@@ -33,6 +33,24 @@ Run all:
 pytest
 ```
 
+Profile per-test memory with a hard 4 GiB guard:
+
+```bash
+.venv/bin/python scripts/profile_test_memory.py \
+  --threshold-gib 4 \
+  --per-test-timeout-seconds 240 \
+  --output-prefix artifacts/test_memory_profile
+```
+
+This command writes:
+- `artifacts/test_memory_profile.csv`: one row per test with peak RSS.
+- `artifacts/test_memory_profile_summary.json`: aggregate counts + top memory tests.
+- `artifacts/test_memory_profile_run.log`: full execution log.
+
+Plain-English interpretation:
+- If a test crosses 4 GiB RSS, it is terminated immediately and recorded as `killed`.
+- If no test crosses 4 GiB, the report still highlights high-memory hotspots for optimization.
+
 Useful focused test runs:
 
 ```bash

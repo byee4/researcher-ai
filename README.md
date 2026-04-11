@@ -16,7 +16,9 @@ Full docs (including tutorial and API reference) live in `docs/` and are set up 
 
 - Docs index: `docs/index.rst`
 - Architecture: `docs/ARCHITECTURE.md`
-- Canonical IR planning roadmap: `docs/WORKFLOW_GRAPH_IR_PLAN.md`
+- Schema formats: `docs/schema_formats.md`
+- Test catalog (plain-English): `docs/test_catalog.md`
+- Canonical IR planning roadmap (archived): `docs/previous/development/WORKFLOW_GRAPH_IR_PLAN.md`
 - Full tutorial: `docs/TUTORIAL.md`
 - RTD deployment guide: `docs/readthedocs.md`
 
@@ -69,6 +71,16 @@ python scripts/estimate_figure_parse_latency.py \
   --trace-output /tmp/figure_latency_40456907_trace.json
 ```
 
+Investigate empty structured responses for Figure 2 (PMID 39303722):
+
+```bash
+python scripts/investigate_figure2_empty_responses.py \
+  --pmid 39303722 \
+  --figure-id "Figure 2" \
+  --baseline-runs 20 \
+  --variant-runs 10
+```
+
 ## Core Entry Points
 
 - CLI workflow runner: `scripts/run_workflow.py`
@@ -81,30 +93,64 @@ python scripts/estimate_figure_parse_latency.py \
 
 Most common settings:
 
-- `OPENAI_API_KEY`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (provider keys)
-- `RESEARCHER_AI_MODEL` (default model router, default: `gpt-5.4`)
-- `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` (LLM request timeout)
-- `RESEARCHER_AI_LITELLM_VERBOSE` (`1/true` enables LiteLLM debug logging for diagnosis)
-- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS` (optional hard timeout for orchestrator `parse_figures` node; degrades to empty figures on timeout)
-- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS` (per-figure floor used to auto-scale orchestrator figure timeout; default `60`)
-- `RESEARCHER_AI_SKIP_FIGURES` (`1/true` skips figure parsing for recovery runs)
-- `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS` (optional timeout override for per-figure subfigure decomposition calls)
-- `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS` (per-paper timeout budget before figure LLM circuit breaker opens; default `3`)
-- `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS` (max output tokens for panel decomposition; default `1200`)
-- `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS` (max output tokens for figure purpose/title extraction; default `600`)
-- `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (max output tokens for figure methods/dataset extraction; default `350`)
-- `RESEARCHER_AI_FIGURE_TRACE_PATH` (optional per-step figure telemetry JSON output path)
-- `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default `warn`)
+- `OPENAI_API_KEY`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (provider keys; no default)
+- `RESEARCHER_AI_MODEL` (default: `gpt-5.4`; stable primary routing model)
+- `RESEARCHER_AI_LLM_TIMEOUT_SECONDS` (default: `90`; good headroom for long structured calls)
+- `RESEARCHER_AI_LITELLM_VERBOSE` (default: `0`; enable only for diagnostics to reduce noisy/sensitive logs)
+- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS` (default: `0`; disables hard global figure timeout to avoid full figure-drop regressions)
+- `RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS` (default: `60`; adaptive per-figure floor informed by measured ~38–52s figure parse times)
+- `RESEARCHER_AI_SKIP_FIGURES` (default: `0`; normal runs should parse figures)
+- `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS` (default: `0`; no per-call hard timeout, since decomposition can legitimately take 30–45s)
+- `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS` (default: `3`; circuit-breaker budget per paper)
+- `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS` (default: `1200`; controls long-tail latency for panel decomposition)
+- `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS` (default: `600`; sufficient for purpose/title extraction without excess latency)
+- `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (default: `350`; sufficient for short methods/dataset extraction tasks)
+- `RESEARCHER_AI_FIGURE_TRACE_PATH` (default: unset; set only when collecting diagnostics)
+- Figure parse warnings now include `subfigure_decomposition_empty_response` when panel decomposition receives persistently empty structured output from the LLM and falls back to best-effort parsing.
+- When that empty-response path falls back to deterministic caption panel splitting, warnings include `subfigure_decomposition_caption_split_fallback`.
+- `RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES` (default: `0`; emits per-attempt structured extraction telemetry for empty-response diagnostics)
+- `RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES_PATH` (default: unset; optional JSONL sink for telemetry events)
+- `RESEARCHER_AI_STRUCTURED_RESPONSE_FORMAT_MODE` (default: `auto`; options: `auto`, `json_schema_only`, `json_object_first`)
+- `RESEARCHER_AI_DISABLE_MODEL_FALLBACKS` (default: `0`; when `1`, disables cross-model failover and keeps only the primary model router)
+- Methods parser degradation path: per-assay failures still emit `assay_stub` warnings, but now preserve heuristic fallback assay descriptions/steps when source text is available (instead of collapsing all failed assays to `Could not be parsed.`).
+- Methods parser quota/rate-limit protection: after the first per-assay quota/rate-limit failure, remaining assays use text fallback without additional assay-level LLM calls (`assay_parse_circuit_opened` warning), reducing wasted retries/quota burn.
+- `RESEARCHER_AI_BIOWORKFLOW_MODE` (`off`, `warn`, `on`; default: `warn`)
   - `off`: skip BioWorkflow validation stage
   - `warn`: validate and continue (non-blocking)
   - `on`: strict mode; if ungrounded fields are detected, run ends in `needs_human_review`
-- `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` (hard cap for iterative retrieval per stage)
-- `RESEARCHER_AI_BIOC_ENABLED` (enable/disable BioC enrichment)
-- `RESEARCHER_AI_FIGURE_CALIBRATION` (on/off)
-- `RESEARCHER_AI_HPC_PROFILE` (`tscc` or `local`)
+- `RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS` (default: `2`; limits call explosion while preserving recall)
+- `RESEARCHER_AI_BIOC_ENABLED` (default: `1`; enables richer grounding context)
+- `RESEARCHER_AI_FIGURE_CALIBRATION` (default: `on`; keeps calibration active in standard runs)
+- `RESEARCHER_AI_HPC_PROFILE` (default: `tscc`; cluster-first runtime profile)
 
 Model/provider routing defaults are defined in:
 `researcher_ai/config/models.yaml`
+
+Benchmark-backed profile for PMID `39303722` (single-provider OpenAI runs):
+
+```bash
+export RESEARCHER_AI_MODEL="gpt-5.4"
+export RESEARCHER_AI_DISABLE_MODEL_FALLBACKS="1"
+export RESEARCHER_AI_LLM_TIMEOUT_SECONDS="180"
+export RESEARCHER_AI_PROVIDER_MAX_RETRIES="0"
+export RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_SECONDS="1800"
+export RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS="180"
+export RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS="180"
+export RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS="6"
+export RESEARCHER_AI_MAX_RETRIEVAL_REFINEMENT_ROUNDS="2"
+export RESEARCHER_AI_BIOWORKFLOW_MODE="warn"
+```
+
+Latest benchmark snapshot (`2026-04-10`, PMID `39303722`):
+- runtime: `535.42s` (`one_more_recommended_net`)
+- parsed paper sections: `8`
+- parsed figures: `7`
+- assays discovered in assay graph: `22`
+- assay stub parse warnings: `22` (all assay stubs failed in this run)
+- dominant failure mode: OpenAI quota/rate-limit (`RateLimitError: ... exceeded your current quota`)
+
+Important: timeout increases cannot recover assay parsing when provider quota is exhausted.
+If your run shows quota/rate-limit failures, restore quota/billing first; then re-run with the profile above.
 
 ## BioWorkflow Strict-Mode Fallback
 
@@ -131,6 +177,15 @@ Run targeted suites:
 pytest tests/test_integration.py
 pytest tests/test_pipeline_builder.py
 pytest tests/test_figure_parser.py
+```
+
+Profile memory across every collected test (kills >4 GiB RSS):
+
+```bash
+.venv/bin/python scripts/profile_test_memory.py \
+  --threshold-gib 4 \
+  --per-test-timeout-seconds 240 \
+  --output-prefix artifacts/test_memory_profile
 ```
 
 ## Build Docs Locally

@@ -410,9 +410,47 @@ def test_persistently_empty_response_raises(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
     monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setattr("researcher_ai.utils.llm._MODEL_CONFIG", {"fallbacks": {}})
 
     with pytest.raises(ValueError, match="Empty structured response"):
         extract_structured_data("gpt-5.4", "prompt", _Out)
+
+
+def test_empty_debug_telemetry_writes_jsonl_when_enabled(monkeypatch, tmp_path: Path):
+    """Debug telemetry should emit JSONL events only when flag is enabled."""
+
+    def _completion(**kwargs):
+        return _DummyResponse(json.dumps({"value": "ok"}))
+
+    out_path = tmp_path / "llm_debug.jsonl"
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES", "1")
+    monkeypatch.setenv("RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES_PATH", str(out_path))
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "ok"
+    assert out_path.exists()
+    events = [json.loads(line) for line in out_path.read_text().splitlines() if line.strip()]
+    assert any(e.get("event") == "structured_start" for e in events)
+    assert any(e.get("event") == "content_observed" for e in events)
+
+
+def test_empty_debug_telemetry_silent_when_disabled(monkeypatch, tmp_path: Path):
+    """Debug telemetry path should stay empty when debug flag is disabled."""
+
+    def _completion(**kwargs):
+        return _DummyResponse(json.dumps({"value": "ok"}))
+
+    out_path = tmp_path / "llm_debug.jsonl"
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.delenv("RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES", raising=False)
+    monkeypatch.setenv("RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES_PATH", str(out_path))
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "ok"
+    assert not out_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +653,67 @@ def test_extract_structured_data_falls_back_on_rate_limit(monkeypatch):
     out = extract_structured_data("gpt-5.4", "prompt", _Out)
     assert out.value == "structured-fallback-ok"
     assert calls[:2] == ["openai/gpt-5.4", "anthropic/claude-4.6-opus"]
+
+
+def test_extract_structured_data_respects_disable_model_fallbacks_env(monkeypatch):
+    """When fallback disabling is enabled, primary errors should not fail over."""
+    calls: list[str] = []
+
+    class RateLimitError(Exception):
+        pass
+
+    def _completion(**kwargs):
+        calls.append(kwargs["model"])
+        raise RateLimitError("rate limit exceeded")
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setenv("RESEARCHER_AI_DISABLE_MODEL_FALLBACKS", "1")
+    monkeypatch.setattr("researcher_ai.utils.llm.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._MODEL_CONFIG",
+        {
+            "fallbacks": {"gpt-5.4": ["claude-4.6-opus"]},
+            "retry": {"rate_limit_max_retries": 0},
+        },
+    )
+
+    with pytest.raises(RateLimitError):
+        extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert calls == ["openai/gpt-5.4"]
+
+
+def test_extract_structured_data_falls_back_on_empty_structured_response(monkeypatch):
+    """Persistent empty output on primary should fail over to fallback model."""
+    calls: list[str] = []
+
+    def _completion(**kwargs):
+        model = kwargs["model"]
+        calls.append(model)
+        if model == "openai/gpt-5.4":
+            return _DummyResponse("")
+        return _DummyResponse(json.dumps({"value": "fallback-after-empty"}))
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=_completion))
+    monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setattr(
+        "researcher_ai.utils.llm._MODEL_CONFIG",
+        {
+            "fallbacks": {"gpt-5.4": ["claude-4.6-opus"]},
+            "retry": {"rate_limit_max_retries": 0},
+        },
+    )
+
+    out = extract_structured_data("gpt-5.4", "prompt", _Out)
+    assert out.value == "fallback-after-empty"
+    assert calls[:4] == [
+        "openai/gpt-5.4",
+        "openai/gpt-5.4",
+        "openai/gpt-5.4",
+        "anthropic/claude-4.6-opus",
+    ]
 
 
 def test_token_preflight_raises_before_api_call(monkeypatch):

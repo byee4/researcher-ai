@@ -2,6 +2,25 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-11 (v2.3.0)
+- feature: minor version release promoting accumulated parser reliability improvements, figure parsing resilience, and memory-profiling observability tooling.
+
+## 2026-04-10
+- feature: add full-suite per-test memory profiler (`scripts/profile_test_memory.py`) with 4 GiB kill guard, plus findings artifacts and plain-English usage documentation.
+- feature: document PMID 39303722 benchmark-backed OpenAI-only export profile and include quota/rate-limit interpretation guidance in README/config docs.
+- bugfix: stop per-assay LLM call cascades after first quota/rate-limit failure by opening an assay-parse circuit breaker and using text fallback for remaining assays.
+- feature: add PMID 39303722 full-run findings document and Beads tracking tree for parser failure/fallback remediation.
+- bugfix: add deterministic caption panel-split fallback and explicit warning marker for subfigure decomposition empty-response cases.
+- bugfix: reduce false retrieval circuit-breaker noise by recognizing textual parameter evidence (for example, FDR/p-value/threshold statements), surfacing `retrieval_parameter_gap` for parameter-only unresolved stages, and emitting `retrieval_refinement_stalled` when refinement yields no novel evidence.
+- feature: add `figure_parse_summary` to workflow run artifacts, including per-figure decomposition mode classification and aggregated parse-warning counts.
+
+## 2026-04-09 (v2.2.3)
+- feature: add Figure 2 (PMID 39303722) empty-response investigation tooling with env-gated structured extraction telemetry.
+- feature: add reproducibility harness `scripts/investigate_figure2_empty_responses.py` and generated experiment artifacts under `parse_results/`.
+- bugfix: allow investigation-mode fallback isolation via `RESEARCHER_AI_DISABLE_MODEL_FALLBACKS`.
+- bugfix: keep heuristic MethodsParser fallback descriptions/steps when per-assay LLM parsing fails (for example quota/rate-limit errors), instead of forcing all assays to `Could not be parsed.`.
+- bugfix: avoid repeated LiteLLM schema-error loops on OpenAI by preflighting strict `json_schema` compatibility and using `json_object` first when schemas are incompatible.
+
 ## 2026-04-09 (v2.2.2)
 - Hardened figure parsing timeout behavior for production stability:
   - adaptive orchestrator figure timeout floor by figure count (`RESEARCHER_AI_PARSE_FIGURES_TIMEOUT_PER_FIGURE_SECONDS`)
@@ -10,6 +29,8 @@ This changelog was generated from archived markdown in `docs/previous/` on 2026-
     - `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS`
     - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS`
 - Added regression tests and configuration/docs updates for timeout observability and controls.
+- bugfix: fail over structured extraction when primary model returns persistently empty structured content, and surface `subfigure_decomposition_empty_response` in figure `parse_warnings` for observability.
+- feature: add env-gated structured-extraction empty-response telemetry and `scripts/investigate_figure2_empty_responses.py` to run Figure 2 (PMID 39303722) experiment matrices with reproducibility reports.
 
 ## 2026-04-08 (v2.1.1)
 - Documented BioWorkflow rollout controls and strict-mode fallback behavior across README and docs.

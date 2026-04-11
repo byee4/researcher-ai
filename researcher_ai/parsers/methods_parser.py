@@ -488,7 +488,8 @@ class MethodsParser:
         code_refs: list[str],
         grounded_accessions: list[str],
     ) -> tuple[list[Assay], list[str]]:
-        if self.assay_parse_concurrency <= 1:
+        assay_parse_concurrency = max(1, int(getattr(self, "assay_parse_concurrency", 1)))
+        if assay_parse_concurrency <= 1:
             return self._parse_assays_sequential(
                 assay_names=assay_names,
                 category_map=category_map,
@@ -543,7 +544,7 @@ class MethodsParser:
     ) -> tuple[list[Assay], list[str]]:
         assays: list[Assay] = []
         warnings: list[str] = []
-        for name in assay_names:
+        for idx, name in enumerate(assay_names):
             assay, assay_warnings = self._parse_single_assay(
                 assay_name=name,
                 assay_names=assay_names,
@@ -557,6 +558,29 @@ class MethodsParser:
             )
             assays.append(assay)
             warnings.extend(assay_warnings)
+            if _warnings_indicate_rate_limit_or_quota(assay_warnings):
+                remaining = assay_names[idx + 1 :]
+                if remaining:
+                    warnings.append(
+                        "assay_parse_circuit_opened: reason=rate_limit_or_quota; "
+                        f"remaining_assays={len(remaining)} parsed via text fallback without LLM"
+                    )
+                for remaining_name in remaining:
+                    method_cat = category_map.get(remaining_name, MethodCategory.computational)
+                    fallback_assay = self._build_fallback_assay(
+                        assay_name=remaining_name,
+                        assay_names=assay_names,
+                        methods_text=methods_text,
+                        method_category=method_cat,
+                        code_refs=code_refs,
+                        grounded_accessions=grounded_accessions,
+                    )
+                    assays.append(fallback_assay)
+                    warnings.append(
+                        "assay_fallback_no_llm_after_circuit: "
+                        f"{remaining_name!r} parsed via text fallback"
+                    )
+                break
         return assays, warnings
 
     async def _parse_assays_async(
@@ -571,7 +595,8 @@ class MethodsParser:
         code_refs: list[str],
         grounded_accessions: list[str],
     ) -> tuple[list[Assay], list[str]]:
-        semaphore = asyncio.Semaphore(max(1, int(self.assay_parse_concurrency)))
+        assay_parse_concurrency = max(1, int(getattr(self, "assay_parse_concurrency", 1)))
+        semaphore = asyncio.Semaphore(assay_parse_concurrency)
 
         async def _worker(idx: int, assay_name: str):
             async with semaphore:
@@ -634,20 +659,39 @@ class MethodsParser:
         except Exception as exc:
             msg = f"assay_stub: {assay_name!r} could not be parsed ({type(exc).__name__}: {exc})"
             logger.warning(msg)
-            paragraph = _extract_assay_paragraph(
-                methods_text,
-                assay_name,
-                assay_names=assay_names,
-            )
-            fallback = _fallback_assay_from_text(
+            fallback = self._build_fallback_assay(
                 assay_name=assay_name,
-                paragraph=paragraph,
+                assay_names=assay_names,
+                methods_text=methods_text,
                 method_category=method_cat,
+                code_refs=code_refs,
+                grounded_accessions=grounded_accessions,
             )
-            return (
-                fallback.model_copy(update={"description": "Could not be parsed."}),
-                [msg],
-            )
+            return fallback, [msg]
+
+    def _build_fallback_assay(
+        self,
+        *,
+        assay_name: str,
+        assay_names: list[str],
+        methods_text: str,
+        method_category: MethodCategory,
+        code_refs: list[str],
+        grounded_accessions: list[str],
+    ) -> Assay:
+        paragraph = _extract_assay_paragraph(
+            methods_text,
+            assay_name,
+            assay_names=assay_names,
+        )
+        fallback = _fallback_assay_from_text(
+            assay_name=assay_name,
+            paragraph=paragraph,
+            method_category=method_category,
+        )
+        fallback = self._apply_code_references(fallback, code_refs)
+        fallback = self._sanitize_assay_data_source(fallback, grounded_accessions)
+        return fallback
 
     def _ensure_data_availability_text(
         self,
@@ -1017,20 +1061,45 @@ class MethodsParser:
                 continue
             missing = self._detect_missing_fields(stage_hits, stage)
             rounds = 0
+            stage_seen: set[str] = set()
+            for hit in stage_hits:
+                key = str(hit.get("text", "")).strip().lower()[:220]
+                if key:
+                    stage_seen.add(key)
             for _ in range(max_refinement_rounds):
                 if not missing:
                     break
                 refined_query = f"{assay_name} {stage} {' '.join(missing)} settings arguments"
                 refinement_hits = self._query_evidence_hits(refined_query, top_k=2)
-                stage_hits.extend(refinement_hits)
-                collected.extend(refinement_hits)
+                novel_hits: list[dict[str, object]] = []
+                for hit in refinement_hits:
+                    key = str(hit.get("text", "")).strip().lower()[:220]
+                    if not key or key in stage_seen:
+                        continue
+                    stage_seen.add(key)
+                    novel_hits.append(hit)
+                if not novel_hits:
+                    warnings.append(
+                        "retrieval_refinement_stalled: "
+                        f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={','.join(missing)}"
+                    )
+                    break
+                stage_hits.extend(novel_hits)
+                collected.extend(novel_hits)
                 missing = self._detect_missing_fields(stage_hits, stage)
                 rounds += 1
             if missing:
-                warnings.append(
-                    "retrieval_circuit_breaker: "
-                    f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={','.join(missing)}"
-                )
+                unresolved = ",".join(missing)
+                if missing == ["parameters"]:
+                    warnings.append(
+                        "retrieval_parameter_gap: "
+                        f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={unresolved}"
+                    )
+                else:
+                    warnings.append(
+                        "retrieval_circuit_breaker: "
+                        f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={unresolved}"
+                    )
         deduped: list[dict[str, object]] = []
         seen: set[str] = set()
         for hit in collected:
@@ -1088,9 +1157,11 @@ class MethodsParser:
         if "software" in required and _SOFTWARE_HINT_RE.search(text) is None:
             missing.append("software")
         if "parameters" in required:
-            has_param = bool(re.search(r"--[A-Za-z0-9_\-]+", text)) or bool(
-                re.search(r"\b[A-Za-z][A-Za-z0-9_]+\s*=\s*[^,\s;]+", text)
-            )
+            has_param = bool(re.search(r"--[A-Za-z0-9_\-]+", text))
+            if not has_param:
+                has_param = bool(re.search(r"\b[A-Za-z][A-Za-z0-9_]+\s*=\s*[^,\s;]+", text))
+            if not has_param:
+                has_param = bool(_PARAMETER_HINT_RE.search(text))
             if not has_param:
                 missing.append("parameters")
         return missing
@@ -1533,6 +1604,24 @@ def _normalize_assay_name(
     return None
 
 
+def _is_rate_limit_or_quota_error_text(text: str) -> bool:
+    message = (text or "").lower()
+    indicators = (
+        "ratelimiterror",
+        "rate limit",
+        "too many requests",
+        "429",
+        "quota",
+        "insufficient_quota",
+        "exceeded your current quota",
+    )
+    return any(token in message for token in indicators)
+
+
+def _warnings_indicate_rate_limit_or_quota(warnings: list[str]) -> bool:
+    return any(_is_rate_limit_or_quota_error_text(str(w)) for w in warnings)
+
+
 def _extract_section_by_heading(text: str, heading_re: re.Pattern) -> str:
     """Extract text after a matching heading until the next top-level section heading.
 
@@ -1616,6 +1705,21 @@ _SOFTWARE_HINT_RE = re.compile(
     r"samtools|bedtools|featureCounts|RSEM|HTSeq|DESeq2|edgeR|Seurat|scanpy|"
     r"CLIPper|MACS2|MACS3|GATK|Picard|Snakemake|Nextflow|R\b|Python\b"
     r")\b",
+    re.IGNORECASE,
+)
+
+_PARAMETER_HINT_RE = re.compile(
+    r"(?:"
+    r"\b(?:fdr|p(?:-?value)?|q(?:-?value)?|alpha|beta|threshold|cutoff|"
+    r"minimum|min|max(?:imum)?|window|bin|threads?|runthreadn|mapq|quality|score|"
+    r"reads?|depth|coverage|fold(?:\s*change)?|rpm|rpkm|tpm)\b"
+    r"[^.;,\n]{0,24}?"
+    r"(?:<=|>=|=|<|>|of\s+)?\s*"
+    r"\d+(?:\.\d+)?(?:e[+-]?\d+)?"
+    r"(?:\s*(?:bp|nt|kb|mb|gb|%))?"
+    r")"
+    r"|(?:\bn\s*=\s*\d+\b)"
+    r"|(?:\bp\s*[<=>]\s*\d+(?:\.\d+)?(?:e[+-]?\d+)?\b)",
     re.IGNORECASE,
 )
 
@@ -1982,7 +2086,8 @@ def _merge_heading_and_llm_assays(
 
     The LLM list is authoritative for ordering and naming, but headings act as
     a safety net: any heading-derived name not already covered by the LLM list
-    (via case-insensitive substring matching) is appended at the end.
+    (via case-insensitive substring matching or high token overlap) is appended
+    at the end.
 
     This ensures that assays with clear section headings in the methods text
     are never silently dropped due to LLM context-window limitations.
@@ -1992,18 +2097,38 @@ def _merge_heading_and_llm_assays(
     if not llm_names:
         return heading_names
 
-    llm_lower = {n.casefold() for n in llm_names}
+    def _tokens(name: str) -> set[str]:
+        stop_tokens = {
+            "and", "or", "the", "of", "for", "to", "in", "on", "with", "by",
+            "analysis", "assay", "assays", "method", "methods", "section",
+        }
+        return {
+            t for t in re.findall(r"[a-z0-9]+", (name or "").casefold())
+            if t not in stop_tokens
+        }
+
+    def _is_covered(heading: str, llm_name: str) -> bool:
+        h_lower = heading.casefold()
+        l_lower = llm_name.casefold()
+        if h_lower in l_lower or l_lower in h_lower:
+            return True
+
+        h_tokens = _tokens(heading)
+        l_tokens = _tokens(llm_name)
+        if not h_tokens or not l_tokens:
+            return False
+
+        overlap = len(h_tokens & l_tokens)
+        if len(h_tokens) <= 2:
+            return overlap == len(h_tokens)
+        return overlap >= 2 and (overlap / len(h_tokens)) >= 0.5
+
     merged = list(llm_names)
     for heading in heading_names:
-        h_lower = heading.casefold()
-        # Check if any LLM name already covers this heading (substring match).
-        covered = any(
-            h_lower in ln or ln in h_lower
-            for ln in llm_lower
-        )
+        # Check if any LLM name already covers this heading.
+        covered = any(_is_covered(heading, llm_name) for llm_name in merged)
         if not covered:
             merged.append(heading)
-            llm_lower.add(h_lower)
     return merged
 
 

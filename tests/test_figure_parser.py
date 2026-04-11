@@ -10,6 +10,7 @@ Testing strategy:
 
 import textwrap
 import json
+import os
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -32,6 +33,7 @@ from researcher_ai.models.paper import Paper, PaperSource, PaperType, Section
 from researcher_ai.models.paper import BioCPassageContext
 from researcher_ai.parsers.figure_parser import (
     FigureParser,
+    SubfigureDecompositionEmptyResponseError,
     SubfigureDecompositionTimeoutError,
     _SubFigureList,
     _SubFigureMeta,
@@ -52,10 +54,19 @@ from researcher_ai.parsers.figure_parser import (
     _panel_bioc_evidence,
     _panel_in_text_context,
     _resolve_figure_title,
+    _split_caption_into_panel_spans,
     _subfigure_from_meta,
+    _fallback_subfigures_from_caption,
 )
 from researcher_ai.parsers.figure_calibration import FigureCalibrationEngine
 from researcher_ai.utils.llm import LLMCache
+
+RUN_HIGH_MEM_TESTS = os.environ.get("RESEARCHER_AI_RUN_HIGH_MEMORY_TESTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +926,53 @@ class TestParseFigure:
         assert called["purpose"] == 0
         assert called["methods"] == 0
 
+    def test_empty_subfigure_response_adds_parse_warning(self, monkeypatch):
+        parser = _make_parser()
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1"]})
+        called = {"purpose": 0, "methods": 0}
+
+        def _empty(*args, **kwargs):  # noqa: ARG001
+            raise SubfigureDecompositionEmptyResponseError(
+                "ValueError: Empty structured response from model 'openai/gpt-5.4'."
+            )
+
+        def _purpose(*args, **kwargs):  # noqa: ARG001
+            called["purpose"] += 1
+            return _FigurePurpose(purpose="x", title="x")
+
+        def _methods(*args, **kwargs):  # noqa: ARG001
+            called["methods"] += 1
+            return ["RNA-seq"]
+
+        monkeypatch.setattr(parser, "_decompose_subfigures", _empty)
+        monkeypatch.setattr(parser, "_determine_purpose", _purpose)
+        monkeypatch.setattr(parser, "_identify_methods", _methods)
+
+        fig = parser.parse_figure(paper, "Figure 1")
+        assert "subfigure_decomposition_empty_response" in fig.parse_warnings
+        assert "subfigure_decomposition_caption_split_fallback" in fig.parse_warnings
+        assert "figure_llm_followups_skipped_after_timeout" not in fig.parse_warnings
+        assert called["purpose"] == 1
+        assert called["methods"] == 1
+
+    def test_fallback_caption_splitter_uses_panel_specific_spans(self):
+        caption = (
+            "Figure 2. (a) Heatmap of marker genes across clusters. "
+            "(b) Violin plots for expression by condition. "
+            "(c) UMAP embedding colored by cell type."
+        )
+        spans = _split_caption_into_panel_spans(caption)
+        assert [lb for lb, _ in spans] == ["a", "b", "c"]
+        assert "Heatmap" in spans[0][1]
+        assert "Violin" in spans[1][1]
+        assert "UMAP" in spans[2][1]
+
+        subfigs = _fallback_subfigures_from_caption(caption)
+        by_label = {sf.label: sf for sf in subfigs}
+        assert "heatmap" in by_label["a"].description.lower()
+        assert "violin" in by_label["b"].description.lower()
+        assert "umap" in by_label["c"].description.lower()
+
 
 # ---------------------------------------------------------------------------
 # TestParseAllFigures (integration-level with mocked LLM)
@@ -1594,6 +1652,7 @@ class TestSpatialMultimodalSisonPdf:
     )
 
     @pytest.mark.skipif(not PDF_PATH.exists(), reason="Sison_Nature_2026.pdf not found")
+    @pytest.mark.skipif(not RUN_HIGH_MEM_TESTS, reason="Set RESEARCHER_AI_RUN_HIGH_MEMORY_TESTS=1")
     def test_visual_panel_count_drives_subfigure_structure(self):
         paper = Paper(
             title="Sison Nature 2026",

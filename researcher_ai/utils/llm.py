@@ -40,6 +40,10 @@ class TokenLimitExceededError(ValueError):
     """Raised when prompt/input tokens exceed configured context window."""
 
 
+class EmptyStructuredResponseError(ValueError):
+    """Raised when a structured extraction call returns no content after retries."""
+
+
 class LLMStreamChunk(BaseModel):
     """Unified streaming chunk payload across providers."""
 
@@ -190,6 +194,8 @@ def _configure_litellm_debug_if_enabled(litellm_module: Any) -> None:
 
 def _fallback_chain_for_model_router(model_router: str) -> list[str]:
     """Return ordered model-router chain: primary model followed by failovers."""
+    if _env_truthy("RESEARCHER_AI_DISABLE_MODEL_FALLBACKS"):
+        return [str(model_router)]
     chain = [str(model_router)]
     fallback_cfg = _MODEL_CONFIG.get("fallbacks", {})
     fallback_raw = (
@@ -220,6 +226,45 @@ def _strip_json_fences(text: str) -> str:
         cleaned = cleaned.strip("`")
         cleaned = cleaned.replace("json\n", "", 1)
     return cleaned.strip()
+
+
+def _env_truthy(name: str) -> bool:
+    raw = os.environ.get(name, "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _llm_empty_debug_enabled() -> bool:
+    return _env_truthy("RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES")
+
+
+def _structured_response_format_strategy() -> str:
+    """Return structured response formatting strategy for extraction calls."""
+    raw = os.environ.get("RESEARCHER_AI_STRUCTURED_RESPONSE_FORMAT_MODE", "auto").strip().lower()
+    if raw in {"auto", "json_schema_only", "json_object_first"}:
+        return raw
+    return "auto"
+
+
+def _emit_empty_debug_event(event: dict[str, Any]) -> None:
+    """Emit optional debug telemetry for empty structured response investigations."""
+    if not _llm_empty_debug_enabled():
+        return
+    payload = dict(event)
+    payload.setdefault("ts", time.time())
+    try:
+        logger.info("LLM_EMPTY_DEBUG %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    except Exception:
+        logger.info("LLM_EMPTY_DEBUG %s", payload)
+    out_path = os.environ.get("RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES_PATH", "").strip()
+    if not out_path:
+        return
+    try:
+        path = Path(out_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.debug("Failed writing empty-response debug event: %s", exc)
 
 
 def _extract_message_text(response: Any) -> str:
@@ -424,6 +469,63 @@ def _is_transient_provider_error(exc: Exception) -> bool:
         or " 503" in msg
         or " 504" in msg
     )
+
+
+def _is_empty_structured_response_error(exc: Exception) -> bool:
+    """Classify persistent empty structured payloads as failover-eligible."""
+    if isinstance(exc, EmptyStructuredResponseError):
+        return True
+    msg = str(exc).lower()
+    return "empty structured response from model" in msg
+
+
+def _is_openai_strict_json_schema_compatible(schema: dict[str, Any]) -> bool:
+    """Return True when schema meets OpenAI strict json_schema requirements.
+
+    OpenAI's strict json_schema mode requires, for every object node:
+    - ``additionalProperties`` must be ``false``
+    - ``required`` must contain every property key
+    """
+
+    def _walk(node: Any) -> bool:
+        if isinstance(node, list):
+            return all(_walk(item) for item in node)
+        if not isinstance(node, dict):
+            return True
+
+        node_type = node.get("type")
+        if node_type == "object" or "properties" in node:
+            props = node.get("properties")
+            if not isinstance(props, dict):
+                return False
+            if node.get("additionalProperties") is not False:
+                return False
+            required = node.get("required")
+            if not isinstance(required, list):
+                return False
+            if set(str(k) for k in props.keys()) != set(str(k) for k in required):
+                return False
+            if not all(_walk(v) for v in props.values()):
+                return False
+
+        for key in ("$defs", "definitions"):
+            defs = node.get(key)
+            if isinstance(defs, dict):
+                if not all(_walk(v) for v in defs.values()):
+                    return False
+
+        for key in ("anyOf", "allOf", "oneOf"):
+            if key in node and not _walk(node.get(key)):
+                return False
+
+        if "items" in node and not _walk(node.get("items")):
+            return False
+        if "prefixItems" in node and not _walk(node.get("prefixItems")):
+            return False
+
+        return True
+
+    return _walk(schema)
 
 
 def _rate_limit_retry_limit() -> int:
@@ -819,11 +921,49 @@ def extract_structured_data(
     strict_schema = json.loads(json.dumps(json_schema))
     strict_schema["additionalProperties"] = False
     last_exc: Optional[Exception] = None
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+    response_strategy = _structured_response_format_strategy()
+
+    _emit_empty_debug_event(
+        {
+            "event": "structured_start",
+            "prompt_hash": prompt_hash,
+            "prompt_len": len(prompt),
+            "schema": schema.__name__ or "ExtractionSchema",
+            "primary_model": primary_llm_model,
+            "model_chain": [
+                _normalize_model_router_for_litellm(m) for m in model_chain
+            ],
+            "strategy": response_strategy,
+            "max_tokens": int(max_tokens),
+        }
+    )
 
     for idx, candidate_router in enumerate(model_chain):
         llm_model = _normalize_model_router_for_litellm(candidate_router)
+        candidate_strategy = response_strategy
+        if (
+            candidate_strategy != "json_object_first"
+            and _infer_provider_from_model_router(llm_model) == "openai"
+            and not _is_openai_strict_json_schema_compatible(strict_schema)
+        ):
+            candidate_strategy = "json_object_first"
+            logger.debug(
+                "OpenAI strict json_schema preflight failed for %s; using json_object-first strategy.",
+                llm_model,
+            )
         normalized_temperature = _normalize_temperature_for_model(llm_model, temperature)
         normalized_max_tokens = _normalize_max_tokens_for_model(llm_model, max_tokens)
+        _emit_empty_debug_event(
+            {
+                "event": "candidate_start",
+                "prompt_hash": prompt_hash,
+                "candidate_index": idx,
+                "candidate_model": llm_model,
+                "strategy": candidate_strategy,
+                "normalized_max_tokens": int(normalized_max_tokens),
+            }
+        )
         try:
             api_key = _resolve_api_key_for_model_router(candidate_router)
             candidate_messages = _preflight_token_budget(
@@ -848,28 +988,98 @@ def extract_structured_data(
             for attempt in range(retry_limit + 1):
                 try:
                     try:
-                        response = _litellm_completion(
-                            **kwargs,
-                            response_format={
-                                "type": "json_schema",
-                                "json_schema": {
-                                    "name": schema.__name__ or "ExtractionSchema",
-                                    "strict": True,
-                                    "schema": strict_schema,
+                        if candidate_strategy == "json_object_first":
+                            _emit_empty_debug_event(
+                                {
+                                    "event": "api_call",
+                                    "prompt_hash": prompt_hash,
+                                    "candidate_model": llm_model,
+                                    "rate_limit_attempt": attempt,
+                                    "mode": "json_object",
+                                }
+                            )
+                            response = _litellm_completion(
+                                **kwargs,
+                                response_format={"type": "json_object"},
+                            )
+                        else:
+                            _emit_empty_debug_event(
+                                {
+                                    "event": "api_call",
+                                    "prompt_hash": prompt_hash,
+                                    "candidate_model": llm_model,
+                                    "rate_limit_attempt": attempt,
+                                    "mode": "json_schema",
+                                }
+                            )
+                            response = _litellm_completion(
+                                **kwargs,
+                                response_format={
+                                    "type": "json_schema",
+                                    "json_schema": {
+                                        "name": schema.__name__ or "ExtractionSchema",
+                                        "strict": True,
+                                        "schema": strict_schema,
+                                    },
                                 },
-                            },
-                        )
+                            )
                     except Exception as exc:
                         msg = str(exc).lower()
+                        _emit_empty_debug_event(
+                            {
+                                "event": "api_call_error",
+                                "prompt_hash": prompt_hash,
+                                "candidate_model": llm_model,
+                                "rate_limit_attempt": attempt,
+                                "mode": (
+                                    "json_object"
+                                    if candidate_strategy == "json_object_first"
+                                    else "json_schema"
+                                ),
+                                "error_class": exc.__class__.__name__,
+                                "error_message": str(exc),
+                            }
+                        )
                         if "response_format" in msg or "schema" in msg or "unsupported" in msg:
+                            if candidate_strategy == "json_schema_only":
+                                raise
                             try:
+                                _emit_empty_debug_event(
+                                    {
+                                        "event": "api_call",
+                                        "prompt_hash": prompt_hash,
+                                        "candidate_model": llm_model,
+                                        "rate_limit_attempt": attempt,
+                                        "mode": "json_object",
+                                    }
+                                )
                                 response = _litellm_completion(
                                     **kwargs,
                                     response_format={"type": "json_object"},
                                 )
                             except Exception as inner_exc:
+                                _emit_empty_debug_event(
+                                    {
+                                        "event": "api_call_error",
+                                        "prompt_hash": prompt_hash,
+                                        "candidate_model": llm_model,
+                                        "rate_limit_attempt": attempt,
+                                        "mode": "json_object",
+                                        "error_class": inner_exc.__class__.__name__,
+                                        "error_message": str(inner_exc),
+                                    }
+                                )
                                 inner_msg = str(inner_exc).lower()
                                 if not llm_model.startswith("gemini/") and "response_format" in inner_msg:
+                                    _emit_empty_debug_event(
+                                        {
+                                            "event": "api_call",
+                                            "prompt_hash": prompt_hash,
+                                            "candidate_model": llm_model,
+                                            "rate_limit_attempt": attempt,
+                                            "mode": "plain",
+                                        }
+                                    )
                                     response = _litellm_completion(**kwargs)
                                 else:
                                     raise inner_exc
@@ -894,18 +1104,71 @@ def extract_structured_data(
                 raise last_exc or RuntimeError("No response returned from structured extraction.")
 
             text = _strip_json_fences(_extract_message_text(response))
+            _emit_empty_debug_event(
+                {
+                    "event": "content_observed",
+                    "prompt_hash": prompt_hash,
+                    "candidate_model": llm_model,
+                    "content_len": len(text or ""),
+                    "empty": not bool(text),
+                }
+            )
             if not text:
                 # Guard against provider responses that return empty content despite 200.
+                if response_strategy == "json_schema_only":
+                    raise EmptyStructuredResponseError(
+                        f"Empty structured response from model '{llm_model}'."
+                    )
+                _emit_empty_debug_event(
+                    {
+                        "event": "api_call",
+                        "prompt_hash": prompt_hash,
+                        "candidate_model": llm_model,
+                        "mode": "json_object",
+                        "reason": "empty_content_retry",
+                    }
+                )
                 retry_response = _litellm_completion(
                     **kwargs,
                     response_format={"type": "json_object"},
                 )
                 text = _strip_json_fences(_extract_message_text(retry_response))
+                _emit_empty_debug_event(
+                    {
+                        "event": "content_observed",
+                        "prompt_hash": prompt_hash,
+                        "candidate_model": llm_model,
+                        "mode": "json_object_retry",
+                        "content_len": len(text or ""),
+                        "empty": not bool(text),
+                    }
+                )
                 if not text and not llm_model.startswith("gemini/"):
+                    _emit_empty_debug_event(
+                        {
+                            "event": "api_call",
+                            "prompt_hash": prompt_hash,
+                            "candidate_model": llm_model,
+                            "mode": "plain",
+                            "reason": "empty_content_retry",
+                        }
+                    )
                     retry_response = _litellm_completion(**kwargs)
                     text = _strip_json_fences(_extract_message_text(retry_response))
+                    _emit_empty_debug_event(
+                        {
+                            "event": "content_observed",
+                            "prompt_hash": prompt_hash,
+                            "candidate_model": llm_model,
+                            "mode": "plain_retry",
+                            "content_len": len(text or ""),
+                            "empty": not bool(text),
+                        }
+                    )
                 if not text:
-                    raise ValueError(f"Empty structured response from model '{llm_model}'.")
+                    raise EmptyStructuredResponseError(
+                        f"Empty structured response from model '{llm_model}'."
+                    )
             try:
                 result = schema.model_validate_json(text)
             except Exception:
@@ -932,7 +1195,21 @@ def extract_structured_data(
             return result
         except Exception as exc:
             last_exc = exc
-            if idx < len(model_chain) - 1 and (_is_rate_limit_error(exc) or _is_transient_provider_error(exc)):
+            if idx < len(model_chain) - 1 and (
+                _is_rate_limit_error(exc)
+                or _is_transient_provider_error(exc)
+                or _is_empty_structured_response_error(exc)
+            ):
+                _emit_empty_debug_event(
+                    {
+                        "event": "failover_structured",
+                        "prompt_hash": prompt_hash,
+                        "from_model": llm_model,
+                        "to_model": _normalize_model_router_for_litellm(model_chain[idx + 1]),
+                        "reason_class": exc.__class__.__name__,
+                        "reason_message": str(exc),
+                    }
+                )
                 logger.warning(
                     "Failing over structured extraction from %s to %s after %s",
                     llm_model,

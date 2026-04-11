@@ -138,6 +138,9 @@ def _make_parser() -> MethodsParser:
     parser = MethodsParser.__new__(MethodsParser)
     parser.llm_model = "test-model"
     parser.cache = None
+    parser.assay_parse_concurrency = 1
+    parser.assay_parse_base_timeout_seconds = 90.0
+    parser.max_retrieval_refinement_rounds = 2
     return parser
 
 
@@ -220,6 +223,38 @@ def test_parse_emits_paper_rag_vision_fallback_warning(monkeypatch):
 
     method = parser.parse(SAMPLE_PAPER, figures=[], computational_only=True)
     assert any("paper_rag_vision_fallback:" in warning for warning in method.parse_warnings)
+
+
+def test_detect_missing_fields_accepts_textual_parameter_signals():
+    parser = _make_parser()
+    hits = [
+        {
+            "text": (
+                "Reads were aligned with STAR v2.7.1a. "
+                "Peaks were called with FDR threshold of 0.001 and p < 0.05."
+            )
+        }
+    ]
+    missing = parser._detect_missing_fields(hits, "peak_call")
+    assert missing == []
+
+
+def test_iterative_retrieval_marks_parameter_gap_not_circuit_breaker(monkeypatch):
+    parser = _make_parser()
+
+    def _query(_query_text: str, top_k: int = 3):  # noqa: ARG001
+        # Includes software signal but no concrete parameter signal.
+        return [{"text": "Reads were aligned using STAR and quantified downstream."}]
+
+    monkeypatch.setattr(parser, "_query_evidence_hits", _query)
+    hits, warnings = parser._iterative_retrieval_loop(
+        assay_name="Knockdown RNA-seq analysis",
+        skeleton_stages=["align"],
+        max_refinement_rounds=2,
+    )
+    assert len(hits) >= 1
+    assert any("retrieval_parameter_gap" in w for w in warnings)
+    assert not any("retrieval_circuit_breaker" in w for w in warnings)
 
 
 def _make_step_meta(n: int = 1, **kwargs) -> _StepMeta:
@@ -984,7 +1019,7 @@ class TestParse:
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_assay_failure_returns_stub_not_abort(self, mock_llm):
-        """LLM failure on a single assay produces a stub; parsing continues."""
+        """LLM failure on a single assay preserves heuristic assay fallback."""
         # Track _AssayMeta calls independently so the inserted classification
         # call (_AssayClassificationList) does not shift the counter.
         assay_meta_calls = [0]
@@ -999,10 +1034,12 @@ class TestParse:
         mock_llm.side_effect = side_effect
         parser = _make_parser()
         method = parser.parse(SAMPLE_PAPER)
-        # All 3 assays returned — the first one as a stub
+        # All 3 assays returned; the failed assay should still contain
+        # deterministic fallback structure instead of a hard stub marker.
         assert len(method.assays) == 3
         stub = method.assays[0]
-        assert stub.description == "Could not be parsed."
+        assert stub.description != "Could not be parsed."
+        assert len(stub.steps) >= 1
 
     @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
     def test_clean_parse_has_no_critical_warnings(self, mock_llm):
@@ -1036,6 +1073,42 @@ class TestParse:
         method = parser.parse(SAMPLE_PAPER)
         assert any("assay_stub" in w for w in method.parse_warnings)
         assert any("timeout" in w for w in method.parse_warnings)
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_all_assay_llm_failures_keep_majority_non_stub_descriptions(self, mock_llm):
+        """When all per-assay LLM calls fail, fallback assays still parse from text."""
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayMeta:
+                raise RuntimeError("quota")
+            return self._mock_llm(prompt, output_schema)
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+        method = parser.parse(SAMPLE_PAPER)
+        assert len(method.assays) >= 3
+        parsed = [a for a in method.assays if a.description != "Could not be parsed."]
+        assert len(parsed) >= (len(method.assays) // 2) + 1
+
+    @patch("researcher_ai.parsers.methods_parser.ask_claude_structured")
+    def test_rate_limit_opens_assay_circuit_and_skips_remaining_assay_llm_calls(self, mock_llm):
+        """After first quota/rate-limit assay failure, remaining assays use local fallback."""
+        assay_meta_calls = [0]
+
+        def side_effect(prompt, output_schema, **kw):
+            if output_schema is _AssayMeta:
+                assay_meta_calls[0] += 1
+                raise RuntimeError("RateLimitError: exceeded your current quota")
+            return self._mock_llm(prompt, output_schema)
+
+        mock_llm.side_effect = side_effect
+        parser = _make_parser()
+        method = parser.parse(SAMPLE_PAPER)
+
+        assert len(method.assays) >= 3
+        assert assay_meta_calls[0] == 1
+        assert any("assay_parse_circuit_opened" in w for w in method.parse_warnings)
+        parsed = [a for a in method.assays if a.description != "Could not be parsed."]
+        assert len(parsed) >= (len(method.assays) // 2) + 1
 
     def test_parse_uses_bioc_methods_when_section_missing(self):
         parser = _make_parser()
@@ -1825,6 +1898,20 @@ class TestMergeHeadingAndLlmAssays:
         llm = ["RNA-seq", "eCLIP", "Proteomics"]
         result = _merge_heading_and_llm_assays(headings, llm)
         assert result[:3] == ["RNA-seq", "eCLIP", "Proteomics"]
+
+    def test_coarse_headings_not_duplicated_when_llm_is_more_specific(self):
+        headings = [
+            "Cell culture and UV crosslinking",
+            "Immunoprecipitation and library preparation",
+            "Computational analysis",
+        ]
+        llm = [
+            "UV crosslinking and immunoprecipitation",
+            "eCLIP library preparation",
+            "Computational read processing and peak calling",
+        ]
+        result = _merge_heading_and_llm_assays(headings, llm)
+        assert result == llm
 
 
 class TestFirstNSentences:

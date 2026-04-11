@@ -28,9 +28,11 @@ from researcher_ai.parsers.methods_parser import (
     _AssayCategoryItem,
     _AssayClassificationList,
     _AssayList,
+    _AssaySkeletonList,
     _AssayMeta,
     _AvailabilityStatement,
     _DependencyList,
+    _StepParameterInferenceList,
     _StepMeta,
 )
 
@@ -108,6 +110,11 @@ def _make_side_effect(llm_responses: dict) -> Any:
             assay_meta_idx[0] += 1
             return _build_assay_meta(raw)
 
+        if output_schema is _AssaySkeletonList:
+            # Newer parser path: optional stage decomposition.
+            raw = llm_responses.get("_AssaySkeletonList", {"assays": []})
+            return _AssaySkeletonList.model_validate(raw)
+
         if output_schema is _DependencyList:
             raw = llm_responses["_DependencyList"]
             from researcher_ai.parsers.methods_parser import _DependencyMeta
@@ -128,6 +135,11 @@ def _make_side_effect(llm_responses: dict) -> Any:
                 data_statement=raw.get("data_statement", ""),
                 code_statement=raw.get("code_statement", ""),
             )
+
+        if output_schema is _StepParameterInferenceList:
+            # Optional RAG parameter-enrichment path.
+            raw = llm_responses.get("_StepParameterInferenceList", {"updates": []})
+            return _StepParameterInferenceList.model_validate(raw)
 
         raise ValueError(f"Unexpected schema in snapshot replay: {output_schema}")
 
