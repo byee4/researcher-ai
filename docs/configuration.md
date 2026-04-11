@@ -56,6 +56,9 @@ Methods parser safeguard behavior:
 Figure parser safeguard behavior:
 - When panel decomposition returns an empty structured response, parser warnings include `subfigure_decomposition_empty_response`.
 - If deterministic caption panel splitting is then used as fallback, parser warnings include `subfigure_decomposition_caption_split_fallback`.
+- Workflow run artifacts now include `figure_parse_summary` with:
+  - `decomposition_mode_counts` (`llm`, `caption_split_fallback`, `timeout_fallback`, `llm_with_warnings`, `empty_response_no_split`)
+  - per-warning counts and per-figure decomposition mode/warning details.
 
 ## BioC / PubMed
 
