@@ -323,6 +323,7 @@ class MethodsParser:
                     max_retrieval_refinement_rounds,
                 )
         self.max_retrieval_refinement_rounds = max(0, int(max_retrieval_refinement_rounds))
+        self._last_skeleton_warnings: list[str] = []
         self.protocol_rag = protocol_rag or ProtocolRAGStore(
             docs_dir=rag_docs_dir,
             persist_dir=rag_persist_dir,
@@ -399,7 +400,10 @@ class MethodsParser:
         )
 
         assays: list[Assay] = []
-        warnings: list[str] = list(code_ref_warnings)
+        warnings: list[str] = [
+            *getattr(self, "_last_skeleton_warnings", []),
+            *code_ref_warnings,
+        ]
         try:
             paper_store = getattr(self, "paper_rag", None)
             if paper_store is not None:
@@ -1002,10 +1006,11 @@ class MethodsParser:
         methods_text: str,
     ) -> dict[str, list[str]]:
         """Build high-level per-assay stage skeletons for iterative retrieval."""
+        self._last_skeleton_warnings = []
         if not assay_names:
             return {}
         assay_list = "\n".join(f"- {name}" for name in assay_names)
-        out: dict[str, list[str]] = {}
+        raw_out: dict[str, list[str]] = {}
         try:
             result = _extract_structured_data(
                 prompt=(
@@ -1024,24 +1029,90 @@ class MethodsParser:
                 canonical = _normalize_assay_name(item.name, assay_names) or item.name
                 stages = [s.strip().lower() for s in item.stages if str(s).strip()]
                 if stages:
-                    out[canonical] = _deduplicate_ordered_casefold(stages)
+                    raw_out[canonical] = _deduplicate_ordered_casefold(stages)
         except Exception as exc:
             logger.warning("Assay skeleton decomposition failed: %s", exc)
 
+        out: dict[str, list[str]] = {}
         for name in assay_names:
-            if name not in out:
-                out[name] = self._default_stages_for_assay(name)
+            repaired, repair_warnings = self._repair_skeleton_stages(
+                assay_name=name,
+                llm_stages=raw_out.get(name, []),
+            )
+            out[name] = repaired
+            self._last_skeleton_warnings.extend(repair_warnings)
         return out
 
-    def _default_stages_for_assay(self, assay_name: str) -> list[str]:
-        text = (assay_name or "").lower()
+    def _assay_template_for_name(self, assay_name: str) -> str:
+        """Return template key used for default stage coverage."""
+        text = (assay_name or "").casefold()
+        if "rbns" in text or "rna bind" in text:
+            return "rbns"
+        if "ribo" in text:
+            return "ribo_seq"
         if "rna" in text:
-            return ["qc", "trim", "align", "quantify", "differential"]
+            return "rna_seq"
+        if "clip" in text:
+            return "clip_seq"
         if "chip" in text:
+            return "chip_seq"
+        if "atac" in text:
+            return "atac_seq"
+        if "variant" in text or "wgs" in text or "wes" in text:
+            return "variant"
+        return "generic"
+
+    def _default_stages_for_assay(self, assay_name: str) -> list[str]:
+        template = self._assay_template_for_name(assay_name)
+        if template == "rbns":
+            return ["qc", "trim", "align", "quantify", "binding_enrichment", "motif"]
+        if template == "ribo_seq":
+            return ["qc", "trim", "align", "quantify", "translation_efficiency", "differential"]
+        if template == "rna_seq":
+            return ["qc", "trim", "align", "quantify", "differential"]
+        if template == "chip_seq":
             return ["qc", "trim", "align", "peak_call", "motif"]
-        if "variant" in text or "wgs" in text:
+        if template == "clip_seq":
+            return ["qc", "trim", "align", "analyze"]
+        if template == "atac_seq":
+            return ["qc", "trim", "align", "peak_call", "differential"]
+        if template == "variant":
             return ["qc", "trim", "align", "variant_call", "filter", "annotate"]
         return ["qc", "align", "analyze"]
+
+    def _normalize_stage_name(self, stage: str) -> str:
+        """Normalize stage labels to stable tokens for template matching."""
+        token = "_".join(re.findall(r"[a-z0-9]+", (stage or "").casefold()))
+        if not token:
+            return ""
+        return _STAGE_ALIAS_MAP.get(token, token)
+
+    def _repair_skeleton_stages(
+        self,
+        *,
+        assay_name: str,
+        llm_stages: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Repair sparse LLM skeletons to ensure canonical template coverage."""
+        normalized_llm = _deduplicate_ordered_casefold(
+            [self._normalize_stage_name(s) for s in llm_stages if str(s).strip()]
+        )
+        defaults = self._default_stages_for_assay(assay_name)
+
+        if not normalized_llm:
+            return defaults, []
+
+        missing = [stage for stage in defaults if stage not in normalized_llm]
+        if not missing:
+            return normalized_llm, []
+
+        repaired = [*normalized_llm, *missing]
+        warning = (
+            "template_missing_stages: "
+            f"assay={assay_name!r} template={self._assay_template_for_name(assay_name)} "
+            f"missing={','.join(missing)} source=partial_skeleton"
+        )
+        return repaired, [warning]
 
     def _iterative_retrieval_loop(
         self,
@@ -1722,6 +1793,47 @@ _PARAMETER_HINT_RE = re.compile(
     r"|(?:\bp\s*[<=>]\s*\d+(?:\.\d+)?(?:e[+-]?\d+)?\b)",
     re.IGNORECASE,
 )
+
+_STAGE_ALIAS_MAP: dict[str, str] = {
+    "quality_control": "qc",
+    "quality_check": "qc",
+    "qc": "qc",
+    "trim": "trim",
+    "trimming": "trim",
+    "adapter_trim": "trim",
+    "adapter_trimming": "trim",
+    "align": "align",
+    "alignment": "align",
+    "map": "align",
+    "mapping": "align",
+    "quantification": "quantify",
+    "quantify": "quantify",
+    "count": "quantify",
+    "counts": "quantify",
+    "abundance": "quantify",
+    "differential_expression": "differential",
+    "differential": "differential",
+    "de": "differential",
+    "peak_calling": "peak_call",
+    "peak_call": "peak_call",
+    "peak": "peak_call",
+    "motif_enrichment": "motif",
+    "motif_analysis": "motif",
+    "motif": "motif",
+    "variant_calling": "variant_call",
+    "variant_call": "variant_call",
+    "annotate": "annotate",
+    "annotation": "annotate",
+    "filtering": "filter",
+    "filter": "filter",
+    "dedup": "deduplicate",
+    "deduplicate": "deduplicate",
+    "normalization": "normalize",
+    "normalize": "normalize",
+    "translation_efficiency": "translation_efficiency",
+    "te": "translation_efficiency",
+    "binding_enrichment": "binding_enrichment",
+}
 
 
 def _fallback_assay_from_text(

@@ -50,6 +50,8 @@ from researcher_ai.parsers.figure_parser import (
     _infer_plot_category_from_text,
     _infer_plot_type_candidates,
     _infer_axis_scale_from_text,
+    _condense_caption_for_decomposition,
+    _merge_subfigures_by_label_order,
     _panel_caption_context,
     _panel_bioc_evidence,
     _panel_in_text_context,
@@ -140,6 +142,9 @@ def _make_parser() -> FigureParser:
     parser.subfigure_decompose_max_tokens = 1200
     parser.figure_purpose_max_tokens = 600
     parser.figure_methods_datasets_max_tokens = 350
+    parser.subfigure_decompose_input_char_cap = 3800
+    parser.subfigure_decompose_context_char_cap = 1600
+    parser.subfigure_panel_span_char_cap = 420
     parser.calibration_engine = FigureCalibrationEngine()
     parser.figure_trace_path = ""
     parser._figure_trace_events = []
@@ -770,6 +775,52 @@ class TestDecomposeSubfigures:
         assert len(model.subfigures) == 1
         assert model.subfigures[0].label == "a"
 
+    def test_condense_caption_keeps_panel_markers_under_char_cap(self):
+        long_caption = (
+            "Figure 2. "
+            "(a) " + ("heatmap details " * 80) +
+            "(b) " + ("violin details " * 80) +
+            "(c) " + ("umap details " * 80)
+        )
+        condensed = _condense_caption_for_decomposition(
+            long_caption,
+            char_cap=360,
+            per_panel_char_cap=120,
+        )
+        assert len(condensed) <= 360
+        assert "(a)" in condensed and "(b)" in condensed and "(c)" in condensed
+
+    def test_merge_subfigures_by_label_order_deduplicates_and_orders(self):
+        merged = _merge_subfigures_by_label_order(
+            [
+                SubFigure(label="b", description="B1", plot_type=PlotType.OTHER, plot_category=PlotCategory.COMPOSITE),
+                SubFigure(label="a", description="A1", plot_type=PlotType.OTHER, plot_category=PlotCategory.COMPOSITE),
+                SubFigure(label="b", description="B2", plot_type=PlotType.OTHER, plot_category=PlotCategory.COMPOSITE),
+                SubFigure(label="c", description="C1", plot_type=PlotType.OTHER, plot_category=PlotCategory.COMPOSITE),
+            ],
+            expected_order=["a", "b", "c"],
+        )
+        assert [sf.label for sf in merged] == ["a", "b", "c"]
+        assert merged[1].description == "B1"
+
+    @patch("researcher_ai.parsers.figure_parser.ask_claude_structured")
+    def test_panel_window_decomposition_relables_and_merges(self, mock_structured):
+        mock_structured.return_value = _SubFigureList(subfigures=[
+            _subfig_meta(label="main", description="panel content", plot_type="image", plot_category="image"),
+        ])
+        parser = _make_parser()
+        caption = (
+            "Figure 2. (a) Heatmap panel. "
+            "(b) Violin panel. "
+            "(c) UMAP panel."
+        )
+        subfigs = parser._decompose_subfigures_by_panel_windows(
+            figure_id="Figure 2",
+            caption=caption,
+            in_text=[],
+        )
+        assert [sf.label for sf in subfigs] == ["a", "b", "c"]
+
 
 # ---------------------------------------------------------------------------
 # TestDeterminePurpose (mocked LLM)
@@ -950,7 +1001,10 @@ class TestParseFigure:
 
         fig = parser.parse_figure(paper, "Figure 1")
         assert "subfigure_decomposition_empty_response" in fig.parse_warnings
-        assert "subfigure_decomposition_caption_split_fallback" in fig.parse_warnings
+        assert (
+            "subfigure_decomposition_panel_window_fallback" in fig.parse_warnings
+            or "subfigure_decomposition_caption_split_fallback" in fig.parse_warnings
+        )
         assert "figure_llm_followups_skipped_after_timeout" not in fig.parse_warnings
         assert called["purpose"] == 1
         assert called["methods"] == 1
@@ -972,6 +1026,39 @@ class TestParseFigure:
         assert "heatmap" in by_label["a"].description.lower()
         assert "violin" in by_label["b"].description.lower()
         assert "umap" in by_label["c"].description.lower()
+
+    def test_empty_response_uses_panel_window_fallback_before_caption_split(self, monkeypatch):
+        parser = _make_parser()
+        paper = SAMPLE_PAPER.model_copy(update={"figure_ids": ["Figure 1"]})
+
+        def _empty(*args, **kwargs):  # noqa: ARG001
+            raise SubfigureDecompositionEmptyResponseError(
+                "ValueError: Empty structured response from model 'openai/gpt-5.4'."
+            )
+
+        panel_subfigs = [
+            SubFigure(label="a", description="Panel A detail", plot_type=PlotType.OTHER, plot_category=PlotCategory.COMPOSITE),
+            SubFigure(label="b", description="Panel B detail", plot_type=PlotType.OTHER, plot_category=PlotCategory.COMPOSITE),
+        ]
+
+        monkeypatch.setattr(parser, "_decompose_subfigures", _empty)
+        monkeypatch.setattr(
+            parser,
+            "_decompose_subfigures_by_panel_windows",
+            lambda **kwargs: panel_subfigs,
+        )
+        monkeypatch.setattr(
+            parser,
+            "_determine_purpose",
+            lambda *args, **kwargs: _FigurePurpose(purpose="x", title="x"),
+        )
+        monkeypatch.setattr(parser, "_identify_methods", lambda *args, **kwargs: ["RNA-seq"])
+
+        fig = parser.parse_figure(paper, "Figure 1")
+        assert "subfigure_decomposition_empty_response" in fig.parse_warnings
+        assert "subfigure_decomposition_panel_window_fallback" in fig.parse_warnings
+        assert "subfigure_decomposition_caption_split_fallback" not in fig.parse_warnings
+        assert [sf.label for sf in fig.subfigures] == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------

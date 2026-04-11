@@ -39,6 +39,8 @@ from researcher_ai.parsers.methods_parser import (
     _AssayCategoryItem,
     _AssayClassificationList,
     _AssayList,
+    _AssaySkeletonItem,
+    _AssaySkeletonList,
     _AssayMeta,
     _AvailabilityStatement,
     _DependencyList,
@@ -141,6 +143,7 @@ def _make_parser() -> MethodsParser:
     parser.assay_parse_concurrency = 1
     parser.assay_parse_base_timeout_seconds = 90.0
     parser.max_retrieval_refinement_rounds = 2
+    parser._last_skeleton_warnings = []
     return parser
 
 
@@ -255,6 +258,55 @@ def test_iterative_retrieval_marks_parameter_gap_not_circuit_breaker(monkeypatch
     assert len(hits) >= 1
     assert any("retrieval_parameter_gap" in w for w in warnings)
     assert not any("retrieval_circuit_breaker" in w for w in warnings)
+
+
+def test_build_assay_skeletons_repairs_missing_template_stages(monkeypatch):
+    parser = _make_parser()
+
+    def _mock_extract(*, prompt, output_schema, **kwargs):  # noqa: ARG001
+        assert output_schema is _AssaySkeletonList
+        return _AssaySkeletonList(
+            assays=[
+                _AssaySkeletonItem(
+                    name="RNA-seq differential expression",
+                    stages=["alignment", "DE"],
+                )
+            ]
+        )
+
+    monkeypatch.setattr(
+        "researcher_ai.parsers.methods_parser._extract_structured_data",
+        _mock_extract,
+    )
+    skeletons = parser._build_assay_skeletons(
+        ["RNA-seq differential expression"],
+        SAMPLE_METHODS_TEXT,
+    )
+
+    assert skeletons["RNA-seq differential expression"] == [
+        "align",
+        "differential",
+        "qc",
+        "trim",
+        "quantify",
+    ]
+    assert any(
+        "template_missing_stages:" in warning
+        and "missing=qc,trim,quantify" in warning
+        for warning in parser._last_skeleton_warnings
+    )
+
+
+def test_default_stages_cover_rbns_specific_steps():
+    parser = _make_parser()
+    assert parser._default_stages_for_assay("RBNS library and computational analysis") == [
+        "qc",
+        "trim",
+        "align",
+        "quantify",
+        "binding_enrichment",
+        "motif",
+    ]
 
 
 def _make_step_meta(n: int = 1, **kwargs) -> _StepMeta:

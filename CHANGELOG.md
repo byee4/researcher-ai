@@ -4,6 +4,7 @@ This changelog was generated from archived markdown in `docs/previous/` on 2026-
 
 ## 2026-04-11 (v2.3.0)
 - feature: minor version release promoting accumulated parser reliability improvements, figure parsing resilience, and memory-profiling observability tooling.
+- bugfix: add two-stage figure decomposition fallback (`panel_window_fallback`) that parses panel spans independently after empty structured decomposition responses, with deterministic label-ordered merge and panel-aware input capping.
 
 ## 2026-04-10
 - feature: add full-suite per-test memory profiler (`scripts/profile_test_memory.py`) with 4 GiB kill guard, plus findings artifacts and plain-English usage documentation.
