@@ -944,6 +944,9 @@ class TestSnapshotPipelineFromRealFixture:
                     for item in raw.get("assays", [])
                 ]
                 return _AssayClassificationList(assays=items)
+            if output_schema.__name__ == "_AssaySkeletonList":
+                raw = llm_responses.get("_AssaySkeletonList", {"assays": []})
+                return output_schema.model_validate(raw)
             if output_schema is _AssayMeta:
                 raw = assay_meta_values[assay_meta_idx[0]]
                 assay_meta_idx[0] += 1
@@ -966,6 +969,9 @@ class TestSnapshotPipelineFromRealFixture:
                     data_statement=raw.get("data_statement", ""),
                     code_statement=raw.get("code_statement", ""),
                 )
+            if output_schema.__name__ == "_StepParameterInferenceList":
+                raw = llm_responses.get("_StepParameterInferenceList", {"updates": []})
+                return output_schema.model_validate(raw)
             raise ValueError(f"Unexpected schema in frozen-artifact replay: {output_schema}")
 
         return side_effect

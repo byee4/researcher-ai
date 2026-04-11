@@ -1899,6 +1899,20 @@ class TestMergeHeadingAndLlmAssays:
         result = _merge_heading_and_llm_assays(headings, llm)
         assert result[:3] == ["RNA-seq", "eCLIP", "Proteomics"]
 
+    def test_coarse_headings_not_duplicated_when_llm_is_more_specific(self):
+        headings = [
+            "Cell culture and UV crosslinking",
+            "Immunoprecipitation and library preparation",
+            "Computational analysis",
+        ]
+        llm = [
+            "UV crosslinking and immunoprecipitation",
+            "eCLIP library preparation",
+            "Computational read processing and peak calling",
+        ]
+        result = _merge_heading_and_llm_assays(headings, llm)
+        assert result == llm
+
 
 class TestFirstNSentences:
     """Tests for _first_n_sentences."""

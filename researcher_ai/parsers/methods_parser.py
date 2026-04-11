@@ -2086,7 +2086,8 @@ def _merge_heading_and_llm_assays(
 
     The LLM list is authoritative for ordering and naming, but headings act as
     a safety net: any heading-derived name not already covered by the LLM list
-    (via case-insensitive substring matching) is appended at the end.
+    (via case-insensitive substring matching or high token overlap) is appended
+    at the end.
 
     This ensures that assays with clear section headings in the methods text
     are never silently dropped due to LLM context-window limitations.
@@ -2096,18 +2097,38 @@ def _merge_heading_and_llm_assays(
     if not llm_names:
         return heading_names
 
-    llm_lower = {n.casefold() for n in llm_names}
+    def _tokens(name: str) -> set[str]:
+        stop_tokens = {
+            "and", "or", "the", "of", "for", "to", "in", "on", "with", "by",
+            "analysis", "assay", "assays", "method", "methods", "section",
+        }
+        return {
+            t for t in re.findall(r"[a-z0-9]+", (name or "").casefold())
+            if t not in stop_tokens
+        }
+
+    def _is_covered(heading: str, llm_name: str) -> bool:
+        h_lower = heading.casefold()
+        l_lower = llm_name.casefold()
+        if h_lower in l_lower or l_lower in h_lower:
+            return True
+
+        h_tokens = _tokens(heading)
+        l_tokens = _tokens(llm_name)
+        if not h_tokens or not l_tokens:
+            return False
+
+        overlap = len(h_tokens & l_tokens)
+        if len(h_tokens) <= 2:
+            return overlap == len(h_tokens)
+        return overlap >= 2 and (overlap / len(h_tokens)) >= 0.5
+
     merged = list(llm_names)
     for heading in heading_names:
-        h_lower = heading.casefold()
-        # Check if any LLM name already covers this heading (substring match).
-        covered = any(
-            h_lower in ln or ln in h_lower
-            for ln in llm_lower
-        )
+        # Check if any LLM name already covers this heading.
+        covered = any(_is_covered(heading, llm_name) for llm_name in merged)
         if not covered:
             merged.append(heading)
-            llm_lower.add(h_lower)
     return merged
 
 

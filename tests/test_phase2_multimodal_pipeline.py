@@ -18,6 +18,12 @@ from researcher_ai.parsers.paper_parser import PaperParser
 from researcher_ai.utils.pdf import extract_figure_panel_images_from_pdf, extract_markdown_from_pdf_with_marker
 
 REAL_PDF_FIXTURE = Path(__file__).parent / "fixtures" / "figure_calibration" / "Sison_Nature_2026.pdf"
+RUN_HIGH_MEM_TESTS = os.environ.get("RESEARCHER_AI_RUN_HIGH_MEMORY_TESTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def test_paper_parser_pdf_uses_marker_markdown():
@@ -269,8 +275,8 @@ def test_marker_pdf_compatibility_smoke():
 def test_extract_figure_panel_images_resizes_to_limit(tmp_path: Path):
     pdf_path = tmp_path / "fixture.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n%dummy")
-    noisy_bytes = os.urandom(1600 * 1600 * 3)
-    noisy = Image.frombytes("RGB", (1600, 1600), noisy_bytes)
+    # Keep this stress image intentionally moderate to avoid unnecessary memory spikes.
+    noisy = Image.effect_noise((1024, 1024), 100.0).convert("RGB")
 
     class _FakePage:
         def extract_text(self, **kwargs):  # noqa: ARG002
@@ -305,7 +311,10 @@ def test_extract_figure_panel_images_resizes_to_limit(tmp_path: Path):
     assert "panel_resize_applied" in diagnostics
 
 
-@pytest.mark.skipif(not REAL_PDF_FIXTURE.exists(), reason="Sison_Nature_2026.pdf not found")
+@pytest.mark.skipif(
+    (not REAL_PDF_FIXTURE.exists()) or (not RUN_HIGH_MEM_TESTS),
+    reason="Requires Sison fixture and RESEARCHER_AI_RUN_HIGH_MEMORY_TESTS=1",
+)
 def test_real_pdf_panel_extraction_path_integration():
     paper = Paper(
         title="Sison Nature 2026",

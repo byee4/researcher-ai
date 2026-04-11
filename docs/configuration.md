@@ -59,6 +59,10 @@ Figure parser safeguard behavior:
 - Workflow run artifacts now include `figure_parse_summary` with:
   - `decomposition_mode_counts` (`llm`, `caption_split_fallback`, `timeout_fallback`, `llm_with_warnings`, `empty_response_no_split`)
   - per-warning counts and per-figure decomposition mode/warning details.
+- Workflow run artifacts include `method_parse_summary` with:
+  - `warning_counts` (prefix-level parse warning counts)
+  - `excluded_assays` (explicit list of assays filtered by `computational_only=True`)
+  - `excluded_assay_count`
 
 ## BioC / PubMed
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from researcher_ai.models.paper import PaperSource
 from researcher_ai.pipeline.orchestrator import WorkflowOrchestrator
-from researcher_ai.pipeline.reporting import summarize_figure_parsing
+from researcher_ai.pipeline.reporting import summarize_figure_parsing, summarize_method_parsing
 
 
 def _emit(progress: int, stage: str) -> None:
@@ -46,6 +46,7 @@ def main() -> int:
         "figures": [f.model_dump(mode="json") for f in figures],
         "figure_parse_summary": summarize_figure_parsing(figures),
         "method": method.model_dump(mode="json"),
+        "method_parse_summary": summarize_method_parsing(method),
         "datasets": [d.model_dump(mode="json") for d in datasets],
         "software": [s.model_dump(mode="json") for s in software],
         "workflow_graph": workflow_graph.model_dump(mode="json") if workflow_graph is not None else None,

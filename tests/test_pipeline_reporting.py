@@ -1,4 +1,4 @@
-from researcher_ai.pipeline.reporting import summarize_figure_parsing
+from researcher_ai.pipeline.reporting import summarize_figure_parsing, summarize_method_parsing
 
 
 def test_summarize_figure_parsing_classifies_modes_and_counts():
@@ -32,3 +32,19 @@ def test_summarize_figure_parsing_classifies_modes_and_counts():
     assert summary["warning_counts"]["subfigure_decomposition_empty_response"] == 1
     assert summary["warning_counts"]["subfigure_decomposition_caption_split_fallback"] == 1
     assert summary["warning_counts"]["subfigure_decomposition_timeout"] == 1
+
+
+def test_summarize_method_parsing_extracts_excluded_assays():
+    method = {
+        "parse_warnings": [
+            "assay_filtered_non_computational: 'Cell culture' excluded (category=experimental, computational_only=True)",
+            "assay_filtered_non_computational: 'Immunofluorescence' excluded (category=experimental, computational_only=True)",
+            "retrieval_parameter_gap: assay='RNA-seq' stage='align' rounds=2 unresolved=parameters",
+        ]
+    }
+    summary = summarize_method_parsing(method)
+    assert summary["excluded_assay_count"] == 2
+    assert summary["warning_counts"]["assay_filtered_non_computational"] == 2
+    assert summary["warning_counts"]["retrieval_parameter_gap"] == 1
+    assert summary["excluded_assays"][0]["name"] == "Cell culture"
+    assert summary["excluded_assays"][0]["category"] == "experimental"

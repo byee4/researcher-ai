@@ -10,6 +10,7 @@ Testing strategy:
 
 import textwrap
 import json
+import os
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -59,6 +60,13 @@ from researcher_ai.parsers.figure_parser import (
 )
 from researcher_ai.parsers.figure_calibration import FigureCalibrationEngine
 from researcher_ai.utils.llm import LLMCache
+
+RUN_HIGH_MEM_TESTS = os.environ.get("RESEARCHER_AI_RUN_HIGH_MEMORY_TESTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1644,6 +1652,7 @@ class TestSpatialMultimodalSisonPdf:
     )
 
     @pytest.mark.skipif(not PDF_PATH.exists(), reason="Sison_Nature_2026.pdf not found")
+    @pytest.mark.skipif(not RUN_HIGH_MEM_TESTS, reason="Set RESEARCHER_AI_RUN_HIGH_MEMORY_TESTS=1")
     def test_visual_panel_count_drives_subfigure_structure(self):
         paper = Paper(
             title="Sison Nature 2026",
