@@ -34,7 +34,9 @@ docs/_build/
 
 # Local run outputs
 parse_results/
+artifacts/
 *.log
+.rag_chroma/
 
 # Coverage
 .coverage

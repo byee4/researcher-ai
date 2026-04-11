@@ -40,6 +40,10 @@ export RESEARCHER_AI_MODEL="gpt-5.4"
 export NCBI_API_KEY="..."
 ```
 
+Secret hygiene:
+- Do not commit real keys to git; keep them in local shell exports or local `.env` files.
+- If a key is exposed, rotate/revoke it immediately before any other cleanup step.
+
 ## 3. Run end-to-end from PMID
 
 ```bash
@@ -72,3 +76,10 @@ Open `docs/_build/html/index.html`.
 ```bash
 pytest
 ```
+
+## 6. If a secret was accidentally committed
+
+1. Revoke/rotate the exposed key in the provider console.
+2. Remove the secret from working tree files.
+3. Rewrite git history to purge the secret from prior commits.
+4. Force-push rewritten refs and coordinate with collaborators to re-sync safely.

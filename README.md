@@ -152,6 +152,16 @@ Latest benchmark snapshot (`2026-04-10`, PMID `39303722`):
 Important: timeout increases cannot recover assay parsing when provider quota is exhausted.
 If your run shows quota/rate-limit failures, restore quota/billing first; then re-run with the profile above.
 
+## Secret Hygiene and Incident Response
+
+- Never commit real provider keys; keep credentials in shell environment variables or local `.env` files that stay gitignored.
+- If a secret is ever committed, treat it as compromised immediately:
+  1. Revoke/rotate the key in the provider console.
+  2. Remove the secret from tracked files in a follow-up commit.
+  3. Rewrite git history to purge the secret (for example with `git filter-repo` or BFG).
+  4. Force-push rewritten branches and notify collaborators to re-clone or hard-reset to the new history.
+  5. Re-run repository secret scanning before the next release.
+
 ## BioWorkflow Strict-Mode Fallback
 
 When `RESEARCHER_AI_BIOWORKFLOW_MODE=on`, validation can block unsafe pipeline

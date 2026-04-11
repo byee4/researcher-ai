@@ -36,6 +36,9 @@ Use this file to:
 - `RESEARCHER_AI_SUBFIGURE_TIMEOUT_SECONDS`: optional timeout for panel decomposition requests (recommended default `0`)
 - `RESEARCHER_AI_MAX_FIGURE_LLM_TIMEOUTS`: per-paper timeout budget before figure LLM circuit breaker opens (default `3`)
 - `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_MAX_TOKENS`: max output tokens for panel decomposition (default `1200`)
+- `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_INPUT_CHAR_CAP`: max caption chars passed to decomposition prompt after panel-aware condensation (default `3800`)
+- `RESEARCHER_AI_SUBFIGURE_DECOMPOSE_CONTEXT_CHAR_CAP`: max in-text context chars passed to decomposition prompt (default `1600`)
+- `RESEARCHER_AI_SUBFIGURE_PANEL_SPAN_CHAR_CAP`: per-panel caption span cap used during panel-aware condensation/fallback (default `420`)
 - `RESEARCHER_AI_FIGURE_PURPOSE_MAX_TOKENS`: max output tokens for figure purpose/title extraction (default `600`)
 - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS`: max output tokens for figure methods/dataset extraction (default `350`)
 - `RESEARCHER_AI_FIGURE_TRACE_PATH`: optional path to write per-step figure telemetry JSON trace
@@ -55,6 +58,7 @@ Methods parser safeguard behavior:
 
 Figure parser safeguard behavior:
 - When panel decomposition returns an empty structured response, parser warnings include `subfigure_decomposition_empty_response`.
+- On empty-response decomposition, parser now attempts a second-stage panel-window parse and emits `subfigure_decomposition_panel_window_fallback` when that succeeds.
 - If deterministic caption panel splitting is then used as fallback, parser warnings include `subfigure_decomposition_caption_split_fallback`.
 - Workflow run artifacts now include `figure_parse_summary` with:
   - `decomposition_mode_counts` (`llm`, `caption_split_fallback`, `timeout_fallback`, `llm_with_warnings`, `empty_response_no_split`)
@@ -103,6 +107,16 @@ export RESEARCHER_AI_BIOC_ENABLED="1"
 export RESEARCHER_AI_FIGURE_CALIBRATION="on"
 export RESEARCHER_AI_HPC_PROFILE="tscc"
 ```
+
+## Secret hygiene and remediation
+
+- Keep provider credentials out of version control. Use environment variables and gitignored local files only.
+- If a key is committed accidentally:
+  1. Rotate/revoke the key immediately.
+  2. Remove the key from tracked files.
+  3. Rewrite history to purge the leaked value from all commits/tags.
+  4. Force-push rewritten refs and have collaborators re-sync to the rewritten history.
+  5. Run a repository secret scan before cutting the next release.
 
 ## PMID 39303722 benchmark profile (2026-04-10)
 

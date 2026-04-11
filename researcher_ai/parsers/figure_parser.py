@@ -382,6 +382,18 @@ class FigureParser:
             128,
             int(os.environ.get("RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS", "350")),
         )
+        self.subfigure_decompose_input_char_cap = max(
+            800,
+            int(os.environ.get("RESEARCHER_AI_SUBFIGURE_DECOMPOSE_INPUT_CHAR_CAP", "3800")),
+        )
+        self.subfigure_decompose_context_char_cap = max(
+            400,
+            int(os.environ.get("RESEARCHER_AI_SUBFIGURE_DECOMPOSE_CONTEXT_CHAR_CAP", "1600")),
+        )
+        self.subfigure_panel_span_char_cap = max(
+            80,
+            int(os.environ.get("RESEARCHER_AI_SUBFIGURE_PANEL_SPAN_CHAR_CAP", "420")),
+        )
         self.figure_trace_path = os.environ.get("RESEARCHER_AI_FIGURE_TRACE_PATH", "").strip()
         self._figure_trace_events: list[dict[str, object]] = []
         self._active_paper_ref: str = ""
@@ -923,7 +935,13 @@ class FigureParser:
             )
             parse_warnings.append("subfigure_decomposition_empty_response")
             decomposition_empty_response = True
-            subfigures = []
+            subfigures = self._decompose_subfigures_by_panel_windows(
+                figure_id=figure_id,
+                caption=caption,
+                in_text=enriched_in_text,
+            )
+            if subfigures:
+                parse_warnings.append("subfigure_decomposition_panel_window_fallback")
         except SubfigureDecompositionTimeoutError as exc:
             logger.warning(
                 "Subfigure decomposition timed out for %s (%s): %s",
@@ -1127,10 +1145,19 @@ class FigureParser:
             return []
 
         t0 = time.perf_counter()
-        context_snippet = "\n".join(in_text[:5])  # top 5 in-text sentences
+        caption_for_prompt = _condense_caption_for_decomposition(
+            caption,
+            char_cap=self.subfigure_decompose_input_char_cap,
+            per_panel_char_cap=self.subfigure_panel_span_char_cap,
+        )
+        context_snippet = _condense_in_text_for_decomposition(
+            in_text,
+            char_cap=self.subfigure_decompose_context_char_cap,
+            max_sentences=5,
+        )
         prompt = (
             f"Analyse this figure caption and in-text references for {figure_id}.\n\n"
-            f"CAPTION:\n{caption}\n\n"
+            f"CAPTION:\n{caption_for_prompt}\n\n"
             f"IN-TEXT REFERENCES:\n{context_snippet}\n\n"
             "Decompose into individual panels/subfigures. For each panel identify: "
             "label (a, b, c…), description (what it shows), plot_type, plot_category, "
@@ -1217,6 +1244,66 @@ class FigureParser:
                 exc,
             )
             return []
+
+    def _decompose_subfigures_by_panel_windows(
+        self,
+        *,
+        figure_id: str,
+        caption: str,
+        in_text: list[str],
+    ) -> list[SubFigure]:
+        """Two-stage fallback: parse each panel span separately, then merge."""
+        spans = _split_caption_into_panel_spans(caption or "")
+        if len(spans) < 2:
+            return []
+
+        t0 = time.perf_counter()
+        merged: list[SubFigure] = []
+        for label, span_text in spans:
+            panel_caption = f"({label}) {span_text}".strip()
+            panel_context = _condense_in_text_for_decomposition(
+                _panel_in_text_context(in_text, label),
+                char_cap=max(300, self.subfigure_decompose_context_char_cap // 2),
+                max_sentences=3,
+            )
+            prompt = (
+                f"Analyse only panel ({label}) for {figure_id}.\n\n"
+                f"PANEL CAPTION SPAN:\n{panel_caption}\n\n"
+                f"PANEL IN-TEXT REFERENCES:\n{panel_context}\n\n"
+                "Return one subfigure entry for this panel. Keep the label exactly as provided."
+            )
+            try:
+                result = _extract_structured_data(
+                    prompt=prompt,
+                    output_schema=_SubFigureList,
+                    system=SYSTEM_FIGURE_PARSER,
+                    model=self.llm_model,
+                    max_tokens=max(256, self.subfigure_decompose_max_tokens // 2),
+                    cache=self.cache,
+                )
+                candidates = [_subfigure_from_meta(m) for m in result.subfigures]
+                chosen = _select_panel_candidate(candidates, label)
+                if chosen is None:
+                    raise ValueError("panel_window_empty_result")
+                merged.append(chosen.model_copy(update={"label": label}))
+            except Exception:
+                merged.extend(_fallback_subfigures_from_caption(panel_caption))
+
+        final = _merge_subfigures_by_label_order(
+            merged,
+            expected_order=[lb for lb, _ in spans],
+        )
+        self._record_trace_event(
+            figure_id=figure_id,
+            step="decompose_subfigures_panel_windows",
+            duration_s=time.perf_counter() - t0,
+            status="ok" if final else "error",
+            model=self.llm_model,
+            timeout_s=self.subfigure_timeout_seconds,
+            stubbed=not bool(final),
+            fell_back=True,
+        )
+        return final
 
     def _determine_purpose(
         self, figure_id: str, caption: str, in_text: list[str]
@@ -1745,6 +1832,59 @@ def _truncate(text: str, n: int) -> str:
     return text[: max(0, n - 3)].rstrip() + "..."
 
 
+def _condense_in_text_for_decomposition(
+    in_text: list[str],
+    *,
+    char_cap: int,
+    max_sentences: int,
+) -> str:
+    """Build bounded in-text context while preserving sentence boundaries."""
+    if not in_text:
+        return ""
+    out: list[str] = []
+    total = 0
+    for sentence in in_text[: max(1, max_sentences)]:
+        s = (sentence or "").strip()
+        if not s:
+            continue
+        add = len(s) + (1 if out else 0)
+        if out and total + add > char_cap:
+            break
+        if not out and len(s) > char_cap:
+            out.append(_truncate(s, char_cap))
+            break
+        out.append(s)
+        total += add
+    return "\n".join(out)
+
+
+def _condense_caption_for_decomposition(
+    caption: str,
+    *,
+    char_cap: int,
+    per_panel_char_cap: int,
+) -> str:
+    """Bound caption size while preserving panel-label structure when possible."""
+    clean = re.sub(r"\s+", " ", (caption or "")).strip()
+    if len(clean) <= char_cap:
+        return clean
+
+    spans = _split_caption_into_panel_spans(clean)
+    if spans:
+        labels = [lb for lb, _ in spans]
+        cap_per_panel = max(80, min(per_panel_char_cap, max(80, char_cap // max(1, len(labels)) - 8)))
+        parts = [f"({lb}) {_truncate(seg.strip() or clean, cap_per_panel)}" for lb, seg in spans]
+        compact = " ".join(parts).strip()
+        if len(compact) <= char_cap:
+            return compact
+        return _truncate(compact, char_cap)
+
+    head = clean[: int(char_cap * 0.7)].rstrip()
+    tail = clean[-max(120, int(char_cap * 0.25)) :].lstrip()
+    stitched = f"{head} ... {tail}".strip()
+    return _truncate(stitched, char_cap)
+
+
 def _merge_ordered_unique(primary: list[str], fallback: list[str]) -> list[str]:
     """Merge two ordered lists without duplicates (case-insensitive key)."""
     merged: list[str] = []
@@ -1761,6 +1901,47 @@ def _normalize_panel_label(label: str) -> str:
     """Normalize a panel label to a lowercase token (e.g., '(A)' -> 'a')."""
     raw = (label or "").strip().strip("()").lower()
     return raw[:1] if raw else ""
+
+
+def _select_panel_candidate(candidates: list[SubFigure], label: str) -> Optional[SubFigure]:
+    """Pick best candidate subfigure for a given panel label."""
+    if not candidates:
+        return None
+    target = _normalize_panel_label(label)
+    for cand in candidates:
+        if _normalize_panel_label(cand.label) == target:
+            return cand
+    return candidates[0]
+
+
+def _merge_subfigures_by_label_order(
+    subfigures: list[SubFigure],
+    *,
+    expected_order: list[str],
+) -> list[SubFigure]:
+    """Merge panel outputs deterministically by expected label order."""
+    by_label: dict[str, SubFigure] = {}
+    for sf in subfigures:
+        key = _normalize_panel_label(sf.label)
+        if not key:
+            continue
+        if key not in by_label:
+            by_label[key] = sf.model_copy(update={"label": key})
+
+    merged: list[SubFigure] = []
+    seen: set[str] = set()
+    for raw in expected_order:
+        key = _normalize_panel_label(raw)
+        if key and key in by_label and key not in seen:
+            seen.add(key)
+            merged.append(by_label[key])
+
+    for sf in subfigures:
+        key = _normalize_panel_label(sf.label)
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(sf.model_copy(update={"label": key}))
+    return merged
 
 
 def _panel_label_pattern(label: str) -> re.Pattern:

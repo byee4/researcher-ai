@@ -210,10 +210,17 @@ class TestMethodsParserSnapshoteCLIP:
         method = self._parse()
         if self.anchors["parse_warnings_empty"]:
             # Live/provider-dependent RAG enrichment may emit informative
-            # inferred-parameter warnings even when no parse degradation occurs.
+            # inferred-parameter/retrieval warnings even when no parse
+            # degradation occurs in the core methods extraction flow.
+            informational_prefixes = (
+                "inferred_parameters:",
+                "retrieval_refinement_stalled:",
+                "retrieval_circuit_breaker:",
+                "retrieval_parameter_gap:",
+            )
             non_informational = [
                 w for w in method.parse_warnings
-                if not str(w).startswith("inferred_parameters:")
+                if not str(w).startswith(informational_prefixes)
             ]
             assert non_informational == [], (
                 f"Expected no non-informational parse warnings; got: {method.parse_warnings}"

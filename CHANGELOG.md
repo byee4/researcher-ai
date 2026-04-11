@@ -2,8 +2,16 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-11 (v3.0.0)
+- feature: major version release to establish a synchronized release baseline across package metadata, runtime `__version__`, docs, and security/incident-response guidance.
+- bugfix: fix version skew by aligning `researcher_ai.__version__` with package metadata so runtime introspection now correctly reports `3.0.0`.
+- bugfix: stabilize methods snapshot assertions for provider/network-constrained environments by treating retrieval-enrichment warnings as informational, reducing false-negative CI/test failures.
+- feature: refresh generated plain-English test catalog (`docs/test_catalog.md`) to include the latest figure/method parser coverage and keep documentation aligned with test reality.
+- feature: document secret hygiene and accidental-secret remediation in README/getting-started/config docs, including key rotation, history rewrite, and force-push workflow.
+
 ## 2026-04-11 (v2.3.0)
 - feature: minor version release promoting accumulated parser reliability improvements, figure parsing resilience, and memory-profiling observability tooling.
+- bugfix: add two-stage figure decomposition fallback (`panel_window_fallback`) that parses panel spans independently after empty structured decomposition responses, with deterministic label-ordered merge and panel-aware input capping.
 
 ## 2026-04-10
 - feature: add full-suite per-test memory profiler (`scripts/profile_test_memory.py`) with 4 GiB kill guard, plus findings artifacts and plain-English usage documentation.
