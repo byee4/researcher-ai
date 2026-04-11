@@ -79,6 +79,16 @@ python -m sphinx -b html docs docs/_build/html
 
 When adding public functions/classes, ensure docstrings are present so API docs remain complete.
 
+## Release checklist
+
+1. Run full tests (`pytest`) and regenerate derived docs (`scripts/generate_schema_catalog.py`, `scripts/generate_test_catalog.py`).
+2. Keep release metadata synchronized:
+   - `pyproject.toml` `project.version`
+   - `researcher_ai/__init__.py` `__version__`
+   - `CHANGELOG.md`
+3. Verify no secrets are tracked in git (working tree and history scans).
+4. If a secret leak is detected, rotate first, then purge history, then force-push.
+
 ## Architecture planning authority
 
 - Current implemented architecture: `docs/ARCHITECTURE.md`

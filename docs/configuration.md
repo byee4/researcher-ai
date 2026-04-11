@@ -108,6 +108,16 @@ export RESEARCHER_AI_FIGURE_CALIBRATION="on"
 export RESEARCHER_AI_HPC_PROFILE="tscc"
 ```
 
+## Secret hygiene and remediation
+
+- Keep provider credentials out of version control. Use environment variables and gitignored local files only.
+- If a key is committed accidentally:
+  1. Rotate/revoke the key immediately.
+  2. Remove the key from tracked files.
+  3. Rewrite history to purge the leaked value from all commits/tags.
+  4. Force-push rewritten refs and have collaborators re-sync to the rewritten history.
+  5. Run a repository secret scan before cutting the next release.
+
 ## PMID 39303722 benchmark profile (2026-04-10)
 
 Use this profile when running PMID `39303722` with OpenAI-only credentials:
