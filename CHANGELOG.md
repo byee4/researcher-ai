@@ -7,6 +7,7 @@ This changelog was generated from archived markdown in `docs/previous/` on 2026-
 - bugfix: stop per-assay LLM call cascades after first quota/rate-limit failure by opening an assay-parse circuit breaker and using text fallback for remaining assays.
 - feature: add PMID 39303722 full-run findings document and Beads tracking tree for parser failure/fallback remediation.
 - bugfix: add deterministic caption panel-split fallback and explicit warning marker for subfigure decomposition empty-response cases.
+- bugfix: reduce false retrieval circuit-breaker noise by recognizing textual parameter evidence (for example, FDR/p-value/threshold statements), surfacing `retrieval_parameter_gap` for parameter-only unresolved stages, and emitting `retrieval_refinement_stalled` when refinement yields no novel evidence.
 
 ## 2026-04-09 (v2.2.3)
 - feature: add Figure 2 (PMID 39303722) empty-response investigation tooling with env-gated structured extraction telemetry.

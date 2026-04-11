@@ -1061,20 +1061,45 @@ class MethodsParser:
                 continue
             missing = self._detect_missing_fields(stage_hits, stage)
             rounds = 0
+            stage_seen: set[str] = set()
+            for hit in stage_hits:
+                key = str(hit.get("text", "")).strip().lower()[:220]
+                if key:
+                    stage_seen.add(key)
             for _ in range(max_refinement_rounds):
                 if not missing:
                     break
                 refined_query = f"{assay_name} {stage} {' '.join(missing)} settings arguments"
                 refinement_hits = self._query_evidence_hits(refined_query, top_k=2)
-                stage_hits.extend(refinement_hits)
-                collected.extend(refinement_hits)
+                novel_hits: list[dict[str, object]] = []
+                for hit in refinement_hits:
+                    key = str(hit.get("text", "")).strip().lower()[:220]
+                    if not key or key in stage_seen:
+                        continue
+                    stage_seen.add(key)
+                    novel_hits.append(hit)
+                if not novel_hits:
+                    warnings.append(
+                        "retrieval_refinement_stalled: "
+                        f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={','.join(missing)}"
+                    )
+                    break
+                stage_hits.extend(novel_hits)
+                collected.extend(novel_hits)
                 missing = self._detect_missing_fields(stage_hits, stage)
                 rounds += 1
             if missing:
-                warnings.append(
-                    "retrieval_circuit_breaker: "
-                    f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={','.join(missing)}"
-                )
+                unresolved = ",".join(missing)
+                if missing == ["parameters"]:
+                    warnings.append(
+                        "retrieval_parameter_gap: "
+                        f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={unresolved}"
+                    )
+                else:
+                    warnings.append(
+                        "retrieval_circuit_breaker: "
+                        f"assay={assay_name!r} stage={stage!r} rounds={rounds} unresolved={unresolved}"
+                    )
         deduped: list[dict[str, object]] = []
         seen: set[str] = set()
         for hit in collected:
@@ -1132,9 +1157,11 @@ class MethodsParser:
         if "software" in required and _SOFTWARE_HINT_RE.search(text) is None:
             missing.append("software")
         if "parameters" in required:
-            has_param = bool(re.search(r"--[A-Za-z0-9_\-]+", text)) or bool(
-                re.search(r"\b[A-Za-z][A-Za-z0-9_]+\s*=\s*[^,\s;]+", text)
-            )
+            has_param = bool(re.search(r"--[A-Za-z0-9_\-]+", text))
+            if not has_param:
+                has_param = bool(re.search(r"\b[A-Za-z][A-Za-z0-9_]+\s*=\s*[^,\s;]+", text))
+            if not has_param:
+                has_param = bool(_PARAMETER_HINT_RE.search(text))
             if not has_param:
                 missing.append("parameters")
         return missing
@@ -1678,6 +1705,21 @@ _SOFTWARE_HINT_RE = re.compile(
     r"samtools|bedtools|featureCounts|RSEM|HTSeq|DESeq2|edgeR|Seurat|scanpy|"
     r"CLIPper|MACS2|MACS3|GATK|Picard|Snakemake|Nextflow|R\b|Python\b"
     r")\b",
+    re.IGNORECASE,
+)
+
+_PARAMETER_HINT_RE = re.compile(
+    r"(?:"
+    r"\b(?:fdr|p(?:-?value)?|q(?:-?value)?|alpha|beta|threshold|cutoff|"
+    r"minimum|min|max(?:imum)?|window|bin|threads?|runthreadn|mapq|quality|score|"
+    r"reads?|depth|coverage|fold(?:\s*change)?|rpm|rpkm|tpm)\b"
+    r"[^.;,\n]{0,24}?"
+    r"(?:<=|>=|=|<|>|of\s+)?\s*"
+    r"\d+(?:\.\d+)?(?:e[+-]?\d+)?"
+    r"(?:\s*(?:bp|nt|kb|mb|gb|%))?"
+    r")"
+    r"|(?:\bn\s*=\s*\d+\b)"
+    r"|(?:\bp\s*[<=>]\s*\d+(?:\.\d+)?(?:e[+-]?\d+)?\b)",
     re.IGNORECASE,
 )
 

@@ -225,6 +225,38 @@ def test_parse_emits_paper_rag_vision_fallback_warning(monkeypatch):
     assert any("paper_rag_vision_fallback:" in warning for warning in method.parse_warnings)
 
 
+def test_detect_missing_fields_accepts_textual_parameter_signals():
+    parser = _make_parser()
+    hits = [
+        {
+            "text": (
+                "Reads were aligned with STAR v2.7.1a. "
+                "Peaks were called with FDR threshold of 0.001 and p < 0.05."
+            )
+        }
+    ]
+    missing = parser._detect_missing_fields(hits, "peak_call")
+    assert missing == []
+
+
+def test_iterative_retrieval_marks_parameter_gap_not_circuit_breaker(monkeypatch):
+    parser = _make_parser()
+
+    def _query(_query_text: str, top_k: int = 3):  # noqa: ARG001
+        # Includes software signal but no concrete parameter signal.
+        return [{"text": "Reads were aligned using STAR and quantified downstream."}]
+
+    monkeypatch.setattr(parser, "_query_evidence_hits", _query)
+    hits, warnings = parser._iterative_retrieval_loop(
+        assay_name="Knockdown RNA-seq analysis",
+        skeleton_stages=["align"],
+        max_refinement_rounds=2,
+    )
+    assert len(hits) >= 1
+    assert any("retrieval_parameter_gap" in w for w in warnings)
+    assert not any("retrieval_circuit_breaker" in w for w in warnings)
+
+
 def _make_step_meta(n: int = 1, **kwargs) -> _StepMeta:
     defaults = dict(
         step_number=n,

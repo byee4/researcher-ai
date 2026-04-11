@@ -48,6 +48,10 @@ Use this file to:
 Methods parser safeguard behavior:
 - On quota/rate-limit assay parse failures, the parser opens an internal assay circuit breaker for that paper and parses remaining assays from local text fallback instead of continuing assay-level LLM calls.
 - This behavior is surfaced via `assay_parse_circuit_opened` and `assay_fallback_no_llm_after_circuit` warnings in `Method.parse_warnings`.
+- Retrieval refinement warnings are severity-typed:
+  - `retrieval_circuit_breaker`: unresolved critical fields (for example missing software evidence).
+  - `retrieval_parameter_gap`: only parameters remain unresolved after refinement rounds.
+  - `retrieval_refinement_stalled`: refinement produced no novel evidence chunks for the stage.
 
 Figure parser safeguard behavior:
 - When panel decomposition returns an empty structured response, parser warnings include `subfigure_decomposition_empty_response`.
