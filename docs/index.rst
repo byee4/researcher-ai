@@ -12,7 +12,8 @@ researcher-ai Documentation
    configuration
    cli
    ARCHITECTURE
-   WORKFLOW_GRAPH_IR_PLAN
+   schema_formats
+   test_catalog
    development
    readthedocs
 
