@@ -2,6 +2,9 @@
 
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
+## 2026-04-11 (v2.3.0)
+- feature: minor version release promoting accumulated parser reliability improvements, figure parsing resilience, and memory-profiling observability tooling.
+
 ## 2026-04-10
 - feature: add full-suite per-test memory profiler (`scripts/profile_test_memory.py`) with 4 GiB kill guard, plus findings artifacts and plain-English usage documentation.
 - feature: document PMID 39303722 benchmark-backed OpenAI-only export profile and include quota/rate-limit interpretation guidance in README/config docs.
