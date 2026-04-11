@@ -105,6 +105,7 @@ Most common settings:
 - `RESEARCHER_AI_FIGURE_METHODS_DATASETS_MAX_TOKENS` (default: `350`; sufficient for short methods/dataset extraction tasks)
 - `RESEARCHER_AI_FIGURE_TRACE_PATH` (default: unset; set only when collecting diagnostics)
 - Figure parse warnings now include `subfigure_decomposition_empty_response` when panel decomposition receives persistently empty structured output from the LLM and falls back to best-effort parsing.
+- When that empty-response path falls back to deterministic caption panel splitting, warnings include `subfigure_decomposition_caption_split_fallback`.
 - `RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES` (default: `0`; emits per-attempt structured extraction telemetry for empty-response diagnostics)
 - `RESEARCHER_AI_LLM_DEBUG_EMPTY_RESPONSES_PATH` (default: unset; optional JSONL sink for telemetry events)
 - `RESEARCHER_AI_STRUCTURED_RESPONSE_FORMAT_MODE` (default: `auto`; options: `auto`, `json_schema_only`, `json_object_first`)

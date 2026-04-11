@@ -911,6 +911,7 @@ class FigureParser:
 
         parse_warnings: list[str] = []
         timed_out = False
+        decomposition_empty_response = False
         try:
             subfigures = self._decompose_subfigures(figure_id, enriched_caption, enriched_in_text)
         except SubfigureDecompositionEmptyResponseError as exc:
@@ -921,6 +922,7 @@ class FigureParser:
                 exc,
             )
             parse_warnings.append("subfigure_decomposition_empty_response")
+            decomposition_empty_response = True
             subfigures = []
         except SubfigureDecompositionTimeoutError as exc:
             logger.warning(
@@ -934,6 +936,8 @@ class FigureParser:
             timed_out = True
         if not subfigures and caption.strip():
             subfigures = _fallback_subfigures_from_caption(caption)
+            if decomposition_empty_response:
+                parse_warnings.append("subfigure_decomposition_caption_split_fallback")
         layout = self._infer_layout(subfigures)
         subfigures = _assign_subfigure_boundary_boxes(subfigures, layout)
         subfigures = [
@@ -1662,22 +1666,8 @@ def _fallback_subfigures_from_caption(caption: str) -> list[SubFigure]:
     if not clean:
         return []
 
-    # Detect panel labels like "(a)", "(b)", "A", "B" in caption text.
-    labels_raw: list[str] = []
-    for m in re.finditer(r"\(([a-hA-H])\)", clean):
-        labels_raw.append(m.group(1).lower())
-    if not labels_raw:
-        for m in re.finditer(r"\b([A-H])\b", clean):
-            labels_raw.append(m.group(1).lower())
-
-    labels: list[str] = []
-    seen: set[str] = set()
-    for lb in labels_raw:
-        if lb not in seen:
-            seen.add(lb)
-            labels.append(lb)
-
-    if not labels:
+    panel_spans = _split_caption_into_panel_spans(clean)
+    if not panel_spans:
         return [
             SubFigure(
                 label="main",
@@ -1688,16 +1678,51 @@ def _fallback_subfigures_from_caption(caption: str) -> list[SubFigure]:
         ]
 
     out: list[SubFigure] = []
-    for lb in labels:
+    for lb, span_text in panel_spans:
+        panel_desc = span_text.strip() or clean
         out.append(
             SubFigure(
                 label=lb,
-                description=f"Panel {lb}: {_truncate(clean, 140)}",
+                description=f"Panel {lb}: {_truncate(panel_desc, 160)}",
                 plot_category=PlotCategory.COMPOSITE,
                 plot_type=PlotType.OTHER,
             )
         )
     return out
+
+
+def _split_caption_into_panel_spans(caption: str) -> list[tuple[str, str]]:
+    """Split caption into ordered panel spans using deterministic label markers."""
+    if not caption:
+        return []
+
+    # Prefer explicit "(a)" style markers; fallback to "A:"/"A)" style markers.
+    marker_matches = list(re.finditer(r"\(([a-hA-H])\)", caption))
+    if not marker_matches:
+        marker_matches = list(
+            re.finditer(r"(?<![A-Za-z0-9])([A-Ha-h])(?=\s*[:)\.])", caption)
+        )
+    if not marker_matches:
+        return []
+
+    markers: list[tuple[str, int, int]] = []
+    seen: set[str] = set()
+    for m in marker_matches:
+        label = (m.group(1) or "").lower()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        markers.append((label, m.start(), m.end()))
+
+    if not markers:
+        return []
+
+    spans: list[tuple[str, str]] = []
+    for idx, (label, _, end_pos) in enumerate(markers):
+        next_start = markers[idx + 1][1] if idx + 1 < len(markers) else len(caption)
+        segment = caption[end_pos:next_start].strip(" .;:-")
+        spans.append((label, segment))
+    return spans
 
 
 def _fallback_purpose_from_caption(caption: str, in_text: list[str], figure_id: str) -> str:

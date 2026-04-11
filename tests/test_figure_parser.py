@@ -53,7 +53,9 @@ from researcher_ai.parsers.figure_parser import (
     _panel_bioc_evidence,
     _panel_in_text_context,
     _resolve_figure_title,
+    _split_caption_into_panel_spans,
     _subfigure_from_meta,
+    _fallback_subfigures_from_caption,
 )
 from researcher_ai.parsers.figure_calibration import FigureCalibrationEngine
 from researcher_ai.utils.llm import LLMCache
@@ -940,9 +942,28 @@ class TestParseFigure:
 
         fig = parser.parse_figure(paper, "Figure 1")
         assert "subfigure_decomposition_empty_response" in fig.parse_warnings
+        assert "subfigure_decomposition_caption_split_fallback" in fig.parse_warnings
         assert "figure_llm_followups_skipped_after_timeout" not in fig.parse_warnings
         assert called["purpose"] == 1
         assert called["methods"] == 1
+
+    def test_fallback_caption_splitter_uses_panel_specific_spans(self):
+        caption = (
+            "Figure 2. (a) Heatmap of marker genes across clusters. "
+            "(b) Violin plots for expression by condition. "
+            "(c) UMAP embedding colored by cell type."
+        )
+        spans = _split_caption_into_panel_spans(caption)
+        assert [lb for lb, _ in spans] == ["a", "b", "c"]
+        assert "Heatmap" in spans[0][1]
+        assert "Violin" in spans[1][1]
+        assert "UMAP" in spans[2][1]
+
+        subfigs = _fallback_subfigures_from_caption(caption)
+        by_label = {sf.label: sf for sf in subfigs}
+        assert "heatmap" in by_label["a"].description.lower()
+        assert "violin" in by_label["b"].description.lower()
+        assert "umap" in by_label["c"].description.lower()
 
 
 # ---------------------------------------------------------------------------
