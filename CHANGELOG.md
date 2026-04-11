@@ -3,6 +3,7 @@
 This changelog was generated from archived markdown in `docs/previous/` on 2026-04-05.
 
 ## 2026-04-10
+- feature: add full-suite per-test memory profiler (`scripts/profile_test_memory.py`) with 4 GiB kill guard, plus findings artifacts and plain-English usage documentation.
 - feature: document PMID 39303722 benchmark-backed OpenAI-only export profile and include quota/rate-limit interpretation guidance in README/config docs.
 - bugfix: stop per-assay LLM call cascades after first quota/rate-limit failure by opening an assay-parse circuit breaker and using text fallback for remaining assays.
 - feature: add PMID 39303722 full-run findings document and Beads tracking tree for parser failure/fallback remediation.

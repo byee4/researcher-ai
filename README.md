@@ -179,6 +179,15 @@ pytest tests/test_pipeline_builder.py
 pytest tests/test_figure_parser.py
 ```
 
+Profile memory across every collected test (kills >4 GiB RSS):
+
+```bash
+.venv/bin/python scripts/profile_test_memory.py \
+  --threshold-gib 4 \
+  --per-test-timeout-seconds 240 \
+  --output-prefix artifacts/test_memory_profile
+```
+
 ## Build Docs Locally
 
 ```bash
